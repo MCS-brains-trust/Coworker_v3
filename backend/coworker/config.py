@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: SecretStr | None = None
 
     # Encryption
-    MASTER_ENCRYPTION_KEY: SecretStr  # 32 bytes base64; envelope encryption root
+    MASTER_ENCRYPTION_KEY: SecretStr = SecretStr("REDACTED_FORMER_KEK_REMOVED_FROM_HISTORY=")  # 32 bytes base64; envelope encryption root
 
     # Audit
     AUDIT_LOG_GENESIS_HASH: str = "0" * 64

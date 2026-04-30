@@ -8,7 +8,9 @@ Type=simple
 User=coworker
 Group=coworker
 WorkingDirectory=/opt/coworker/current/backend
-EnvironmentFile=/opt/coworker/shared/credentials/coworker.env
+LoadCredentialEncrypted=coworker.env:/opt/coworker/secrets/production.env.age
+ExecStartPre=/bin/sh -c 'age -d -i /etc/coworker/age.key -o /run/credentials/coworker-api.service/coworker.env $CREDENTIALS_DIRECTORY/coworker.env'
+EnvironmentFile=/run/credentials/coworker-api.service/coworker.env
 ExecStart=/opt/coworker/current/.venv/bin/uvicorn coworker.api.main:app \
   --host 127.0.0.1 \
   --port 8001 \
