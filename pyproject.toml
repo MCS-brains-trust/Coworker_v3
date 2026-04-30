@@ -1,0 +1,66 @@
+[project]
+name = "mcs-coworker"
+version = "3.0.0"
+description = "MC & S CoWorker v3 — server-native AI accounting practice automation"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "pydantic>=2.9",
+  "pydantic-settings>=2.6",
+  "sqlalchemy[asyncio]>=2.0",
+  "asyncpg>=0.30",
+  "alembic>=1.14",
+  "redis[hiredis]>=5.2",
+  "loguru>=0.7",
+  "anthropic>=0.40",
+  "msal>=1.31",
+  "httpx>=0.28",
+  "tenacity>=9.0",
+  "apscheduler>=3.10",
+  "click>=8.1",
+  "pgvector>=0.3",
+  "pypdf>=5.1",
+  "python-multipart>=0.0.18",
+  "websockets>=14.1",
+  "cryptography>=44.0",
+  "structlog>=24.4",
+  "presidio-analyzer>=2.2",
+  "presidio-anonymizer>=2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "pytest-cov>=6.0",
+  "ruff>=0.8",
+  "mypy>=1.13",
+  "bandit>=1.8",
+  "pre-commit>=4.0",
+  "httpx>=0.28",
+  "factory-boy>=3.3",
+]
+
+[project.scripts]
+coworker = "coworker.cli.main:cli"
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["backend/tests"]

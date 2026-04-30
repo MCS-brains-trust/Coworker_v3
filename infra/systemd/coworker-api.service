@@ -1,0 +1,36 @@
+[Unit]
+Description=MC & S CoWorker v3 API
+After=network.target postgresql.service redis-server.service
+Requires=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=coworker
+Group=coworker
+WorkingDirectory=/opt/coworker/current/backend
+EnvironmentFile=/opt/coworker/shared/credentials/coworker.env
+ExecStart=/opt/coworker/current/.venv/bin/uvicorn coworker.api.main:app \
+  --host 127.0.0.1 \
+  --port 8001 \
+  --workers 2 \
+  --log-config /opt/coworker/current/backend/coworker/logging-uvicorn.json
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/coworker /var/log/coworker
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
