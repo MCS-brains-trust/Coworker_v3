@@ -18,7 +18,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-ddef upgrade() -> None:
+def upgrade() -> None:
     """Upgrade schema."""
     # Create firms table
     op.create_table(
