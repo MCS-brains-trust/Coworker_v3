@@ -48,6 +48,10 @@ coworker = "coworker.cli.main:cli"
 [tool.uv]
 package = true
 
+[tool.setuptools.packages.find]
+where = ["backend"]
+include = ["coworker*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
