@@ -51,7 +51,10 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: SecretStr | None = None
 
     # Encryption
-    MASTER_ENCRYPTION_KEY: SecretStr = SecretStr("REDACTED_FORMER_KEK_REMOVED_FROM_HISTORY=")  # 32 bytes base64; envelope encryption root
+    # Required at runtime. 32 random bytes, base64-encoded. Generate with:
+    #   python3 -c "import secrets,base64; print(base64.b64encode(secrets.token_bytes(32)).decode())"
+    # Never commit a real value. Production reads it via systemd LoadCredentialEncrypted.
+    MASTER_ENCRYPTION_KEY: SecretStr
 
     # Audit
     AUDIT_LOG_GENESIS_HASH: str = "0" * 64
