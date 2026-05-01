@@ -33,9 +33,9 @@ class Settings(BaseSettings):
 
     # Anthropic
     ANTHROPIC_API_KEY: SecretStr
-    ANTHROPIC_MODEL_DEFAULT: str = "claude-sonnet-4-5"
-    ANTHROPIC_MODEL_REASONING: str = "claude-opus-4-5"
-    ANTHROPIC_MODEL_FAST: str = "claude-haiku-4-5"
+    ANTHROPIC_MODEL_DEFAULT: str = "claude-sonnet-4-6"
+    ANTHROPIC_MODEL_REASONING: str = "claude-opus-4-7"
+    ANTHROPIC_MODEL_FAST: str = "claude-haiku-4-5-20251001"
     ANTHROPIC_MAX_TOKENS_DEFAULT: int = 8192
     ANTHROPIC_EXTENDED_THINKING_BUDGET: int = 16000
 
