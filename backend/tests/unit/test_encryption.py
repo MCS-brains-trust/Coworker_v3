@@ -1,4 +1,6 @@
 import pytest
+from cryptography.exceptions import InvalidTag
+
 from coworker.security.encryption import encrypt_str, decrypt_str
 
 def test_encryption_roundtrip():
@@ -18,6 +20,7 @@ def test_encryption_cross_firm_binding():
     decrypted = decrypt_str(ciphertext, firm_id=firm_a)
     assert decrypted == plaintext
     
-    # Decrypting with incorrect firm_id should fail
-    with pytest.raises(Exception):
+    # Decrypting with incorrect firm_id should fail with InvalidTag
+    # (AAD mismatch fails AES-GCM authentication, not a generic error).
+    with pytest.raises(InvalidTag):
         decrypt_str(ciphertext, firm_id=firm_b)
