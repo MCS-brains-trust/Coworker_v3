@@ -267,3 +267,11 @@ When using extended thinking, default `thinking_budget` is 16000 tokens; special
 
 When this file's contents conflict with the architecture document, the architecture document wins. When this file's contents conflict with the existing code, treat it as a discrepancy to discuss before changing either.
 
+
+### Postgres role privileges (local dev)
+
+The `coworker` role needs CREATEDB to let the test fixture create
+`coworker_test`:
+Stage B1 missed this; corrected mid-Stage-B2 and documented in
+`backend/tests/conftest.py`. If you're setting up a fresh WSL/dev
+environment, run the ALTER ROLE before running the test suite.
