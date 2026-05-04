@@ -97,7 +97,7 @@ def upgrade() -> None:
         sa.Column('payload', postgresql.JSONB(), nullable=False),
         sa.Column('prev_hash', sa.String(length=64), nullable=False),
         sa.Column('entry_hash', sa.String(length=64), nullable=False),
-        sa.ForeignKeyConstraint(['firm_id'], ['firms.id'], ),
+        sa.ForeignKeyConstraint(['firm_id'], ['firms.id'], ondelete='RESTRICT'),
         sa.PrimaryKeyConstraint('id'),
         sa.UniqueConstraint('entry_hash')
     )
