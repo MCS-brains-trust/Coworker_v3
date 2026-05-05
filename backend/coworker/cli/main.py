@@ -27,7 +27,7 @@ def create_firm(name: str, slug: str | None, abn: str | None, timezone_: str) ->
     import asyncio
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
     from slugify import slugify
-    from coworker.db.session import SessionLocal
+    from coworker.db.session import SessionLocal, firm_context
     from coworker.db.models.tenancy import Firm
 
     if abn is not None and (len(abn) != 11 or not abn.isdigit()):
@@ -40,12 +40,20 @@ def create_firm(name: str, slug: str | None, abn: str | None, timezone_: str) ->
 
     resolved_slug = slug if slug is not None else slugify(name)
 
+    # Pre-generate the firm id so we can enter firm_context BEFORE the
+    # INSERT. Under FORCE ROW LEVEL SECURITY on `firms` (Stage C2), the
+    # INSERT's WITH CHECK predicate is `id = NULLIF(current_setting('app.firm_id',
+    # true), '')::uuid`, so app.firm_id must already match the row's id at
+    # transaction begin or the INSERT is denied. The Session after_begin
+    # listener picks the value up from the firm_context ContextVar.
+    firm_id = uuid.uuid4()
+
     async def _create():
-        async with SessionLocal() as session:
-            firm = Firm(name=name, slug=resolved_slug, abn=abn, timezone=timezone_)
+        async with SessionLocal() as session, firm_context(firm_id):
+            firm = Firm(id=firm_id, name=name, slug=resolved_slug, abn=abn, timezone=timezone_)
             session.add(firm)
             await session.commit()
-            click.echo(f"Created firm '{name}' with slug '{resolved_slug}'")
+        click.echo(f"Created firm '{name}' with slug '{resolved_slug}' (id={firm_id})")
 
     asyncio.run(_create())
 
