@@ -43,12 +43,6 @@ class Settings(BaseSettings):
     ANTHROPIC_MAX_TOKENS_DEFAULT: int = 8192
     ANTHROPIC_EXTENDED_THINKING_BUDGET: int = 16000
 
-    # Microsoft (per-firm tenancy means these are the *fallback* MC&S app
-    # credentials for development only; real auth is per-firm in DB)
-    MS_CLIENT_ID_FALLBACK: str = ""
-    MS_CLIENT_SECRET_FALLBACK: SecretStr = SecretStr("")
-    MS_TENANT_ID_FALLBACK: str = ""
-
     # Embedding provider
     EMBEDDING_PROVIDER: Literal["voyage", "openai"] = "voyage"
     VOYAGE_API_KEY: SecretStr | None = None
@@ -59,6 +53,15 @@ class Settings(BaseSettings):
     #   python3 -c "import secrets,base64; print(base64.b64encode(secrets.token_bytes(32)).decode())"
     # Never commit a real value. Production reads it via systemd LoadCredentialEncrypted.
     MASTER_ENCRYPTION_KEY: SecretStr
+
+    # Session JWT signing key (HS256). Required at runtime. Distinct from
+    # MASTER_ENCRYPTION_KEY: different threat model, different rotation
+    # cadence. Generate with:
+    #   python3 -c "import secrets,base64; print(base64.b64encode(secrets.token_bytes(32)).decode())"
+    SESSION_JWT_SECRET: SecretStr
+
+    # Where /auth/microsoft/callback redirects on success.
+    OAUTH_POST_LOGIN_REDIRECT: str = "/"
 
     # Audit
     AUDIT_LOG_GENESIS_HASH: str = "0" * 64
