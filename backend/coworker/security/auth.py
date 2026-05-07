@@ -12,6 +12,9 @@ from coworker.config import get_settings
 from coworker.security.encryption import encrypt_str
 
 GRAPH_SCOPES = [
+    "openid",
+    "profile",
+    "email",
     "User.Read",
     "Mail.ReadWrite",
     "Mail.Send",
