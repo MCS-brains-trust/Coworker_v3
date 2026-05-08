@@ -37,7 +37,7 @@ class ScrubResult:
 
 
 class PIIScrubber:
-    def __init__(self):
+    def __init__(self) -> None:
         provider = NlpEngineProvider(nlp_configuration={
             "nlp_engine_name": "spacy",
             "models": [{"lang_code": "en", "model_name": "en_core_web_lg"}],
