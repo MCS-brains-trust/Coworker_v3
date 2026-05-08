@@ -123,6 +123,66 @@ class AnthropicClient:
     def firm_id(self) -> str:
         return self._firm_id
 
+    async def count_tokens(
+        self,
+        messages: list[CompletionMessage],
+        *,
+        model: str,
+        system: str | None = None,
+    ) -> int:
+        """Count input tokens for a hypothetical ``complete`` call.
+
+        Returns the input-side token count *after* PII scrubbing — so
+        the answer reflects what would actually go on the wire, not
+        the raw input. The Phase 5 orchestrator uses this for its
+        per-context cost guard: estimate token cost before sending,
+        decline (and queue for approval) if the budget is exceeded.
+
+        Raises the same connector taxonomy as ``complete``.
+        """
+        if not messages:
+            raise ValueError("messages must contain at least one entry")
+
+        scrubbed_messages, _ = self._scrub_messages(messages)
+        scrubbed_system, _ = self._scrub_system(system)
+
+        count_kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": scrubbed_messages,
+        }
+        if scrubbed_system is not None:
+            count_kwargs["system"] = scrubbed_system
+
+        try:
+            result = await self._client.messages.count_tokens(**count_kwargs)
+        except anthropic.AuthenticationError as exc:
+            raise ConnectorAuthError(
+                f"Anthropic auth failed: {exc.message}"
+            ) from exc
+        except anthropic.PermissionDeniedError as exc:
+            raise ConnectorAuthError(
+                f"Anthropic permission denied: {exc.message}"
+            ) from exc
+        except anthropic.RateLimitError as exc:
+            retry_after = _parse_retry_after(
+                exc.response.headers.get("Retry-After")
+            )
+            raise ConnectorRateLimited(retry_after=retry_after) from exc
+        except anthropic.APIStatusError as exc:
+            if 500 <= exc.status_code < 600:
+                raise ConnectorTransient(
+                    f"Anthropic returned {exc.status_code}: {exc.message}"
+                ) from exc
+            raise ConnectorAuthError(
+                f"Anthropic returned {exc.status_code}: {exc.message}"
+            ) from exc
+        except (anthropic.APIConnectionError, anthropic.APITimeoutError) as exc:
+            raise ConnectorTransient(
+                f"network/timeout talking to Anthropic: {exc}"
+            ) from exc
+
+        return int(result.input_tokens)
+
     async def complete(
         self,
         messages: list[CompletionMessage],

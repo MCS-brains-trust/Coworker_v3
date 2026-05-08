@@ -262,6 +262,70 @@ async def test_complete_invalid_max_tokens_rejected() -> None:
 # --------------------------- representation safety --------------------------
 
 
+async def test_count_tokens_returns_input_count() -> None:
+    client = _client()
+    with respx.mock(assert_all_called=True) as rmock:
+        rmock.post(
+            "https://api.anthropic.com/v1/messages/count_tokens"
+        ).mock(
+            return_value=httpx.Response(200, json={"input_tokens": 42})
+        )
+        n = await client.count_tokens(
+            messages=[CompletionMessage(role="user", content="Hello")],
+            model="claude-sonnet-4-6",
+        )
+    assert n == 42
+
+
+async def test_count_tokens_scrubs_before_counting() -> None:
+    """Counts reflect what would actually be sent: post-scrub."""
+    captured: dict[str, str] = {}
+
+    def _capture(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.read().decode("utf-8")
+        return httpx.Response(200, json={"input_tokens": 7})
+
+    client = _client()
+    tfn = "987 654 321"
+    with respx.mock(assert_all_called=True) as rmock:
+        rmock.post(
+            "https://api.anthropic.com/v1/messages/count_tokens"
+        ).mock(side_effect=_capture)
+        await client.count_tokens(
+            messages=[
+                CompletionMessage(role="user", content=f"TFN {tfn}"),
+            ],
+            model="claude-sonnet-4-6",
+        )
+    assert tfn not in captured["body"]
+
+
+async def test_count_tokens_empty_messages_rejected() -> None:
+    client = _client()
+    with pytest.raises(ValueError):
+        await client.count_tokens(messages=[], model="claude-sonnet-4-6")
+
+
+async def test_count_tokens_429_raises_rate_limited() -> None:
+    client = _client()
+    with respx.mock(assert_all_called=True) as rmock:
+        rmock.post(
+            "https://api.anthropic.com/v1/messages/count_tokens"
+        ).mock(
+            return_value=httpx.Response(
+                429,
+                headers={"Retry-After": "5"},
+                json={"error": {"type": "rate_limit_error", "message": "x"}},
+            )
+        )
+        with pytest.raises(ConnectorRateLimited) as excinfo:
+            await client.count_tokens(
+                messages=[CompletionMessage(role="user", content="Hi")],
+                model="claude-sonnet-4-6",
+            )
+        assert excinfo.value.retry_after == 5.0
+
+
 def test_completion_result_repr_redacts_text() -> None:
     """``repr(CompletionResult)`` must never include the response text."""
     import datetime as _dt
