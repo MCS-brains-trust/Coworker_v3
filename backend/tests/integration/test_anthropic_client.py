@@ -326,6 +326,62 @@ async def test_count_tokens_429_raises_rate_limited() -> None:
         assert excinfo.value.retry_after == 5.0
 
 
+async def test_complete_records_tokens_when_meter_provided() -> None:
+    """End-to-end: complete() with a TokenMeter increments Redis counters."""
+    from urllib.parse import urlparse, urlunparse
+
+    from redis.asyncio import from_url
+
+    from coworker.config import get_settings
+    from coworker.observability.token_meter import TokenMeter
+
+    base = str(get_settings().REDIS_URL)
+    parsed = urlparse(base)
+    test_redis = from_url(
+        urlunparse(parsed._replace(path="/14")),
+        encoding="utf-8",
+        decode_responses=True,
+    )
+    await test_redis.flushdb()
+    try:
+        meter = TokenMeter(test_redis)
+        client = AnthropicClient(
+            firm_id="firm-meter-test",
+            api_key=SecretStr("sk-ant-test-key"),
+            token_meter=meter,
+        )
+
+        with respx.mock(assert_all_called=True) as rmock:
+            rmock.post(_ANTHROPIC_MESSAGES_URL).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "id": "msg_test",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "claude-sonnet-4-6",
+                        "content": [{"type": "text", "text": "hi"}],
+                        "stop_reason": "end_turn",
+                        "stop_sequence": None,
+                        "usage": {"input_tokens": 25, "output_tokens": 11},
+                    },
+                )
+            )
+            await client.complete(
+                messages=[CompletionMessage(role="user", content="hi")],
+                model="claude-sonnet-4-6",
+                max_tokens=10,
+            )
+
+        usage = await meter.usage(
+            firm_id="firm-meter-test", model="claude-sonnet-4-6"
+        )
+        assert usage == {"input_tokens": 25, "output_tokens": 11, "calls": 1}
+    finally:
+        await test_redis.flushdb()
+        await test_redis.aclose()
+
+
 def test_completion_result_repr_redacts_text() -> None:
     """``repr(CompletionResult)`` must never include the response text."""
     import datetime as _dt

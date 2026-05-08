@@ -38,6 +38,7 @@ from coworker.connectors.exceptions import (
     ConnectorRateLimited,
     ConnectorTransient,
 )
+from coworker.observability.token_meter import TokenMeter
 from coworker.security.pii import PIIScrubber, ScrubResult
 
 # Module-level lazy singleton. PIIScrubber is expensive to initialise
@@ -110,6 +111,7 @@ class AnthropicClient:
         *,
         api_key: SecretStr | None = None,
         scrubber: PIIScrubber | None = None,
+        token_meter: TokenMeter | None = None,
     ) -> None:
         self._firm_id = firm_id
         if api_key is None:
@@ -118,6 +120,14 @@ class AnthropicClient:
             api_key=api_key.get_secret_value()
         )
         self._scrubber = scrubber if scrubber is not None else _default_scrubber()
+        # token_meter is optional. Production wiring (Phase 5
+        # orchestrator) constructs every AnthropicClient with a
+        # TokenMeter so usage is recorded; tests that don't need
+        # metering pass None (the default) and the recording call
+        # is skipped. The architecture's "every Anthropic call meters
+        # tokens" guarantee is therefore enforced by the orchestrator
+        # construction site, not by this constructor.
+        self._token_meter = token_meter
 
     @property
     def firm_id(self) -> str:
@@ -265,6 +275,14 @@ class AnthropicClient:
         if mapping:
             for placeholder, original in mapping.items():
                 rendered = rendered.replace(placeholder, original)
+
+        if self._token_meter is not None:
+            await self._token_meter.record(
+                firm_id=self._firm_id,
+                model=response.model,
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+            )
 
         return CompletionResult(
             text=rendered,
