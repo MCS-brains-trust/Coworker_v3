@@ -36,10 +36,10 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from coworker.config import get_settings
+from coworker.connectors.exceptions import ConnectorAuthError
 from coworker.db.models.tenancy import Firm, User
 from coworker.db.session import _attach_pool_listeners, firm_context
 from coworker.graph.context import GraphContext, graph_context
-from coworker.graph.exceptions import ConnectorAuthError
 from coworker.security.encryption import encrypt_str
 
 # --------------------------- fixtures / helpers -----------------------------

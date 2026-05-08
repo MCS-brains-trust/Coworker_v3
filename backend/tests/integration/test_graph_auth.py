@@ -22,13 +22,12 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from coworker.connectors.exceptions import ConnectorAuthError, ConnectorTransient
 from coworker.db.models.audit import AuditLogEntry
 from coworker.db.models.tenancy import Firm, User
 from coworker.db.session import _attach_pool_listeners, firm_context
 from coworker.graph.auth import refresh_access_token
-from coworker.graph.exceptions import ConnectorAuthError, ConnectorTransient
 from coworker.security.encryption import decrypt_str, encrypt_str
-
 
 # --------------------------- fixtures / helpers -----------------------------
 
@@ -132,7 +131,7 @@ def _seed_firm_and_user(
                 ms_refresh_token_ciphertext=encrypt_str(
                     refresh_token_plain, firm_id=firm_id_str
                 ),
-                ms_token_expires_at=_dt.datetime.now(_dt.timezone.utc)
+                ms_token_expires_at=_dt.datetime.now(_dt.UTC)
                 - _dt.timedelta(minutes=1),  # already expired
             )
             session.add(user)
@@ -232,7 +231,7 @@ def test_refresh_success_updates_columns_and_audits(graph_auth_environment) -> N
         == "new-refresh-token"
     )
     assert user.ms_token_expires_at is not None
-    assert user.ms_token_expires_at > _dt.datetime.now(_dt.timezone.utc)
+    assert user.ms_token_expires_at > _dt.datetime.now(_dt.UTC)
 
     audit_entries = _audit_entries_for(sessionmaker, firm_id)
     refresh_entries = [

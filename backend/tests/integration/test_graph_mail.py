@@ -23,15 +23,15 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from coworker.db.models.audit import AuditLogEntry
-from coworker.db.models.tenancy import Firm, User
-from coworker.db.session import _attach_pool_listeners, firm_context
-from coworker.graph.context import GraphContext
-from coworker.graph.exceptions import (
+from coworker.connectors.exceptions import (
     ConnectorAuthError,
     ConnectorRateLimited,
     ConnectorTransient,
 )
+from coworker.db.models.audit import AuditLogEntry
+from coworker.db.models.tenancy import Firm, User
+from coworker.db.session import _attach_pool_listeners, firm_context
+from coworker.graph.context import GraphContext
 from coworker.graph.mail import (
     InboxAddress,
     InboxMessage,

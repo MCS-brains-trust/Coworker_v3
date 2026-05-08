@@ -48,12 +48,11 @@ import httpx
 from cryptography.exceptions import InvalidTag
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from coworker.connectors.exceptions import ConnectorAuthError, ConnectorTransient
 from coworker.db.models.tenancy import Firm, User
-from coworker.graph.exceptions import ConnectorAuthError, ConnectorTransient
 from coworker.security.audit import append_audit
 from coworker.security.auth import GRAPH_SCOPES
 from coworker.security.encryption import decrypt_str, encrypt_str
-
 
 _TOKEN_ENDPOINT_TEMPLATE = (
     "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
@@ -164,7 +163,7 @@ async def refresh_access_token(
     # number. str() / int() coerce + narrow for mypy.
     new_access_token: str = str(body["access_token"])
     expires_in = int(body["expires_in"])
-    expires_at = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(
+    expires_at = _dt.datetime.now(_dt.UTC) + _dt.timedelta(
         seconds=expires_in
     )
 

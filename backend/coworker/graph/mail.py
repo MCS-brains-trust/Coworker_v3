@@ -32,12 +32,12 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from coworker.graph.context import GraphContext
-from coworker.graph.exceptions import (
+from coworker.connectors.exceptions import (
     ConnectorAuthError,
     ConnectorRateLimited,
     ConnectorTransient,
 )
+from coworker.graph.context import GraphContext
 from coworker.graph.rate_limit import get_rate_limiter
 from coworker.security.audit import append_audit
 
