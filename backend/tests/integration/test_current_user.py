@@ -35,7 +35,6 @@ from coworker.config import get_settings
 from coworker.db.models.tenancy import Firm, User
 from coworker.db.session import _attach_pool_listeners, firm_context
 
-
 _GENERIC_BODY = {"detail": "authentication required"}
 
 
@@ -159,7 +158,7 @@ def _issue_jwt(
     algorithm: str = "HS256",
 ) -> str:
     """Build a JWT with explicit control over secret/TTL for adversarial tests."""
-    now = _dt.datetime.now(_dt.timezone.utc)
+    now = _dt.datetime.now(_dt.UTC)
     claims = {
         "sub": str(user_id),
         "firm_id": str(firm_id),
@@ -300,22 +299,76 @@ def test_cross_firm_jwt_returns_401_generic(deps_test_environment) -> None:
     assert response.json() == _GENERIC_BODY
 
 
-def test_all_failure_paths_return_identical_body(deps_test_environment) -> None:
-    """All five 401 cases must return byte-identical bodies.
+def test_alg_none_jwt_returns_401_generic(deps_test_environment) -> None:
+    """A JWT signed with ``alg=none`` must be rejected.
 
-    Captures the no-info-leak invariant directly: if any future change
-    diverges the response (a header, a hint, a different detail), this
-    test fails before it ships.
+    `decode_session_jwt` passes ``algorithms=["HS256"]`` to ``jwt.decode``;
+    PyJWT's allow-list semantics reject any token whose header advertises
+    a different algorithm — including the unsigned ``none``. Without that
+    allow-list, a classic alg-confusion attack would let an attacker mint
+    a forged token without any secret. We test the property explicitly so
+    that a future tightening or loosening of the algorithm list cannot
+    silently regress this protection.
+
+    Closes carry-forward §8.8.
     """
     sessionmaker = deps_test_environment["sessionmaker"]
     client = deps_test_environment["client"]
     created = deps_test_environment["created_firm_ids"]
 
-    slug = f"deps-identical-{uuid.uuid4().hex[:8]}"
+    slug = f"deps-algnone-{uuid.uuid4().hex[:8]}"
     firm_id, user_id = _seed_firm_and_user(
-        sessionmaker, slug=slug, upn=f"grace-{uuid.uuid4().hex[:8]}@example.com"
+        sessionmaker, slug=slug, upn=f"henry-{uuid.uuid4().hex[:8]}@example.com"
     )
     created.append(firm_id)
+
+    # PyJWT requires explicit opt-in via algorithm="none" to encode an
+    # unsigned token. Real attackers craft these by hand, but for the
+    # test we use the library's own escape hatch.
+    now = _dt.datetime.now(_dt.UTC)
+    forged = jwt.encode(
+        {
+            "sub": str(user_id),
+            "firm_id": str(firm_id),
+            "iat": int(now.timestamp()),
+            "exp": int((now + _dt.timedelta(seconds=60)).timestamp()),
+        },
+        "",  # no secret — alg=none ignores it
+        algorithm="none",
+    )
+    response = client.get("/whoami", cookies={"coworker_session": forged})
+
+    assert response.status_code == 401
+    assert response.json() == _GENERIC_BODY
+
+
+def test_all_failure_paths_return_identical_body(deps_test_environment) -> None:
+    """Every 401 case must return byte-identical bodies.
+
+    Captures the no-info-leak invariant directly: if any future change
+    diverges the response (a header, a hint, a different detail), this
+    test fails before it ships.
+
+    Closes carry-forward §8.9 — the cross-firm case is included so the
+    invariant covers the RLS-mediated path as well as the JWT-decode
+    failures.
+    """
+    sessionmaker = deps_test_environment["sessionmaker"]
+    client = deps_test_environment["client"]
+    created = deps_test_environment["created_firm_ids"]
+
+    slug_a = f"deps-identical-a-{uuid.uuid4().hex[:8]}"
+    firm_id, user_id = _seed_firm_and_user(
+        sessionmaker, slug=slug_a, upn=f"grace-{uuid.uuid4().hex[:8]}@example.com"
+    )
+    created.append(firm_id)
+
+    # Second firm for the cross-firm probe.
+    slug_b = f"deps-identical-b-{uuid.uuid4().hex[:8]}"
+    firm_id_b, _user_id_b = _seed_firm_and_user(
+        sessionmaker, slug=slug_b, upn=f"isaac-{uuid.uuid4().hex[:8]}@example.com"
+    )
+    created.append(firm_id_b)
 
     bodies: list[str] = []
 
@@ -358,6 +411,19 @@ def test_all_failure_paths_return_identical_body(deps_test_environment) -> None:
             cookies={
                 "coworker_session": _issue_jwt(
                     user_id=uuid.uuid4(), firm_id=firm_id
+                )
+            },
+        ).text
+    )
+
+    # 6. Cross-firm: real user_id (firm A) paired with firm_id of firm B.
+    # RLS scopes the SELECT to firm B; user belongs to firm A; zero rows.
+    bodies.append(
+        client.get(
+            "/whoami",
+            cookies={
+                "coworker_session": _issue_jwt(
+                    user_id=user_id, firm_id=firm_id_b
                 )
             },
         ).text
