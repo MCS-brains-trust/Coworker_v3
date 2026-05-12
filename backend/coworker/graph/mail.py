@@ -37,15 +37,13 @@ from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from coworker.connectors.exceptions import (
-    ConnectorAuthError,
-    ConnectorNotFound,
-    ConnectorRateLimited,
-    ConnectorTransient,
-)
+from coworker.connectors.exceptions import ConnectorTransient
 from coworker.graph.context import GraphContext
+from coworker.graph.errors import (
+    audit_failure,
+    raise_for_graph_status,
+)
 from coworker.graph.rate_limit import get_rate_limiter
 from coworker.security.audit import append_audit
 
@@ -227,7 +225,7 @@ async def list_inbox(
                     headers={"Authorization": f"Bearer {ctx.access_token}"},
                 )
         except httpx.RequestError as exc:
-            await _audit_failure(
+            await audit_failure(
                 ctx.session,
                 firm_id=firm_id_str,
                 user_id=user_id_str,
@@ -240,7 +238,7 @@ async def list_inbox(
 
     # ``list_inbox`` does not raise ConnectorNotFound — a list endpoint
     # returns 200 with an empty array when nothing matches, not 404.
-    await _raise_for_status(
+    await raise_for_graph_status(
         response,
         session=ctx.session,
         firm_id=firm_id_str,
@@ -309,7 +307,7 @@ async def get_message(ctx: GraphContext, message_id: str) -> FullEmailMessage:
                     headers={"Authorization": f"Bearer {ctx.access_token}"},
                 )
         except httpx.RequestError as exc:
-            await _audit_failure(
+            await audit_failure(
                 ctx.session,
                 firm_id=firm_id_str,
                 user_id=user_id_str,
@@ -321,7 +319,7 @@ async def get_message(ctx: GraphContext, message_id: str) -> FullEmailMessage:
                 "network error talking to Microsoft Graph"
             ) from exc
 
-    await _raise_for_status(
+    await raise_for_graph_status(
         response,
         session=ctx.session,
         firm_id=firm_id_str,
@@ -401,7 +399,7 @@ async def get_attachment(
                     headers={"Authorization": f"Bearer {ctx.access_token}"},
                 )
         except httpx.RequestError as exc:
-            await _audit_failure(
+            await audit_failure(
                 ctx.session,
                 firm_id=firm_id_str,
                 user_id=user_id_str,
@@ -416,7 +414,7 @@ async def get_attachment(
                 "network error talking to Microsoft Graph"
             ) from exc
 
-    await _raise_for_status(
+    await raise_for_graph_status(
         response,
         session=ctx.session,
         firm_id=firm_id_str,
@@ -561,127 +559,3 @@ def _parse_graph_datetime(value: str) -> _dt.datetime:
     return _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def _parse_retry_after(header: str | None) -> float | None:
-    """Parse Retry-After. Microsoft Graph returns integer seconds.
-
-    Returns None for missing or non-numeric headers (HTTP-date form
-    is rare from Graph and we don't bother parsing it; the caller
-    sees ``retry_after=None`` and applies its own default backoff).
-    """
-    if header is None:
-        return None
-    try:
-        return float(header)
-    except (TypeError, ValueError):
-        return None
-
-
-async def _raise_for_status(
-    response: httpx.Response,
-    *,
-    session: AsyncSession,
-    firm_id: str,
-    user_id: str,
-    action: str,
-    allow_not_found: bool,
-    extra: dict[str, Any] | None = None,
-) -> None:
-    """Audit + raise the right ConnectorError for a non-2xx Graph response.
-
-    Centralised so every mail endpoint reports the same reason strings
-    to the audit log and maps the same status codes to the same
-    exception classes. ``allow_not_found`` is True for fetch-by-id
-    endpoints where 404 is a real "the thing was deleted" condition;
-    False for list endpoints where 404 should not happen and would be
-    a misconfigured caller.
-    """
-    status = response.status_code
-    if 200 <= status < 300:
-        return
-
-    if status == 404 and allow_not_found:
-        await _audit_failure(
-            session,
-            firm_id=firm_id,
-            user_id=user_id,
-            action=action,
-            reason="microsoft_404",
-            extra=extra,
-        )
-        raise ConnectorNotFound(f"Microsoft Graph returned 404 for {action}")
-    if status == 401 or status == 403:
-        await _audit_failure(
-            session,
-            firm_id=firm_id,
-            user_id=user_id,
-            action=action,
-            reason=f"microsoft_{status}",
-            extra=extra,
-        )
-        raise ConnectorAuthError(
-            f"Microsoft Graph rejected request: HTTP {status}"
-        )
-    if status == 429:
-        retry_after = _parse_retry_after(response.headers.get("Retry-After"))
-        await _audit_failure(
-            session,
-            firm_id=firm_id,
-            user_id=user_id,
-            action=action,
-            reason="microsoft_429",
-            extra=extra,
-        )
-        raise ConnectorRateLimited(retry_after=retry_after)
-    if 500 <= status < 600:
-        await _audit_failure(
-            session,
-            firm_id=firm_id,
-            user_id=user_id,
-            action=action,
-            reason="microsoft_5xx",
-            extra=extra,
-        )
-        raise ConnectorTransient(f"Microsoft Graph returned {status}")
-
-    # Anything else 4xx (e.g. 400 bad query) — treat as auth-class for
-    # now (caller can't recover automatically). XPM/FuseSign connectors
-    # may grow a finer-grained ConnectorPermanent later.
-    await _audit_failure(
-        session,
-        firm_id=firm_id,
-        user_id=user_id,
-        action=action,
-        reason=f"microsoft_{status}",
-        extra=extra,
-    )
-    raise ConnectorAuthError(f"Microsoft Graph returned {status}")
-
-
-async def _audit_failure(
-    session: AsyncSession,
-    *,
-    firm_id: str,
-    user_id: str,
-    action: str,
-    reason: str,
-    extra: dict[str, Any] | None = None,
-) -> None:
-    """Append ``<action>_failed`` and commit.
-
-    Failure audits commit inside the helper so they survive any
-    subsequent rollback in the request scope (FastAPI exception
-    propagation may discard the session before it commits). Same
-    pattern as ``refresh_access_token``.
-    """
-    payload: dict[str, Any] = {"user_id": user_id, "reason": reason}
-    if extra:
-        payload.update(extra)
-    await append_audit(
-        session,
-        firm_id=firm_id,
-        actor_type="user",
-        actor_id=user_id,
-        action=f"{action}_failed",
-        payload=payload,
-    )
-    await session.commit()
