@@ -39,6 +39,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from coworker.connectors.exceptions import ConnectorTransient
+from coworker.connectors.shadow_mode import guard_writable
 from coworker.graph.context import GraphContext
 from coworker.graph.errors import (
     audit_failure,
@@ -444,6 +445,256 @@ async def get_attachment(
     await ctx.session.commit()
 
     return attachment
+
+
+async def create_draft(
+    ctx: GraphContext,
+    *,
+    to: list[str],
+    subject: str,
+    body: str,
+    body_content_type: Literal["html", "text"] = "html",
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    in_reply_to: str | None = None,
+) -> FullEmailMessage:
+    """Create a draft email in the user's Drafts folder.
+
+    This is the first write method in the Graph connector and the
+    canonical example of the shadow-mode contract: ``guard_writable``
+    is called before any HTTP work, so a firm in shadow mode never
+    produces an external side effect. If the guard raises, no draft
+    is created, no Graph call is made, and a ``shadow_blocked.email.create_draft``
+    audit row records the attempt.
+
+    Two shapes:
+
+    - ``in_reply_to is None`` — single POST to ``/me/messages`` with
+      the full payload. Graph creates the draft in Drafts and returns
+      the resulting Message.
+    - ``in_reply_to`` set — two-step path. First POST to
+      ``/me/messages/{id}/createReply`` (empty body) which produces a
+      threaded draft with the original message quoted; second PATCH
+      to ``/me/messages/{draft_id}`` with our payload, replacing
+      Graph's "Re: " subject and quoted body. The reply pathway keeps
+      proper email threading at the SMTP layer (In-Reply-To /
+      References headers); the two-step is unavoidable because the
+      single-POST shape doesn't let us set those headers.
+
+    Args:
+        ctx: per-request Graph bundle. ``ctx.session`` must already
+            be inside ``firm_context(ctx.firm.id)``.
+        to: at least one recipient address. Each entry is a bare
+            email string (e.g. ``"alice@example.com"``); Graph
+            wraps it into the SDK shape on the wire.
+        subject: draft subject. Empty allowed.
+        body: draft body text. Plaintext for ``body_content_type="text"``,
+            HTML otherwise.
+        body_content_type: ``"html"`` (default) or ``"text"``.
+        cc, bcc: optional recipient lists. ``None`` omits the field
+            from the payload entirely; pass ``[]`` to send an
+            explicit empty list (rare).
+        in_reply_to: message id to reply to. When set, the two-step
+            reply path is taken and the resulting draft will thread
+            correctly in the recipient's email client.
+
+    Returns:
+        ``FullEmailMessage`` parsed from Graph's response — same
+        shape as ``get_message`` returns, so callers can pull the
+        draft's ``id`` (e.g. to queue for approval), ``web_link``,
+        etc. without a second round trip.
+
+    Raises:
+        ShadowModeBlocked: ``firm.shadow_mode`` is True. The audit
+            row ``shadow_blocked.email.create_draft`` has already been
+            committed by ``guard_writable``.
+        ConnectorAuthError: 401 / 403 / other unhandled 4xx.
+        ConnectorNotFound: 404 from createReply (the ``in_reply_to``
+            message doesn't exist or was deleted). For the simple
+            path 404 should not occur; if Graph ever returns it,
+            it's mapped through the same channel.
+        ConnectorRateLimited: 429.
+        ConnectorTransient: 5xx, timeout, or network error. If the
+            reply path fails at the PATCH step the createReply draft
+            remains in Drafts; the caller can delete it manually.
+            We do not auto-clean because the audit trail of "what
+            we tried" is more valuable than a clean Drafts folder
+            during diagnosis.
+        ValueError: empty ``to``, any empty address in to/cc/bcc, or
+            empty ``in_reply_to`` when provided.
+    """
+    if not to:
+        raise ValueError("to must contain at least one recipient")
+    if any(not addr for addr in to):
+        raise ValueError("to addresses must be non-empty")
+    if cc is not None and any(not addr for addr in cc):
+        raise ValueError("cc addresses must be non-empty")
+    if bcc is not None and any(not addr for addr in bcc):
+        raise ValueError("bcc addresses must be non-empty")
+    if in_reply_to is not None and not in_reply_to:
+        raise ValueError("in_reply_to must be non-empty when provided")
+
+    mailbox_id = str(ctx.user.id)
+    firm_id_str = str(ctx.firm.id)
+    user_id_str = str(ctx.user.id)
+    action = "graph.mail.create_draft"
+
+    # Shadow guard before any Graph call. guard_writable commits its
+    # own audit row inside and raises ShadowModeBlocked if blocked;
+    # the rate-limit slot and httpx client below never execute on the
+    # blocked path.
+    await guard_writable(
+        ctx.session,
+        ctx.firm,
+        action="email.create_draft",
+        actor_type="user",
+        actor_id=user_id_str,
+    )
+
+    draft_payload = _build_draft_payload(
+        to=to,
+        subject=subject,
+        body=body,
+        body_content_type=body_content_type,
+        cc=cc,
+        bcc=bcc,
+    )
+    audit_extra: dict[str, Any] = {"recipient_count": len(to)}
+    if in_reply_to is not None:
+        audit_extra["in_reply_to"] = in_reply_to
+
+    rate_limiter = get_rate_limiter()
+    async with rate_limiter.slot(mailbox_id):
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                if in_reply_to is None:
+                    response = await http.post(
+                        _MESSAGES_ENDPOINT,
+                        json=draft_payload,
+                        headers={
+                            "Authorization": f"Bearer {ctx.access_token}",
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    response_for_status = response
+                    response_for_status_extra = audit_extra
+                else:
+                    reply_url = (
+                        f"{_MESSAGES_ENDPOINT}/"
+                        f"{quote(in_reply_to, safe='')}/createReply"
+                    )
+                    reply_response = await http.post(
+                        reply_url,
+                        headers={
+                            "Authorization": f"Bearer {ctx.access_token}",
+                            "Content-Length": "0",
+                        },
+                    )
+                    # If createReply failed, raise here with step context.
+                    await raise_for_graph_status(
+                        reply_response,
+                        session=ctx.session,
+                        firm_id=firm_id_str,
+                        user_id=user_id_str,
+                        action=action,
+                        allow_not_found=True,
+                        extra={**audit_extra, "step": "createReply"},
+                    )
+                    draft_id = reply_response.json()["id"]
+                    patch_url = (
+                        f"{_MESSAGES_ENDPOINT}/{quote(draft_id, safe='')}"
+                    )
+                    response = await http.patch(
+                        patch_url,
+                        json=draft_payload,
+                        headers={
+                            "Authorization": f"Bearer {ctx.access_token}",
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    response_for_status = response
+                    response_for_status_extra = {
+                        **audit_extra,
+                        "draft_id": draft_id,
+                        "step": "patch_reply",
+                    }
+        except httpx.RequestError as exc:
+            await audit_failure(
+                ctx.session,
+                firm_id=firm_id_str,
+                user_id=user_id_str,
+                action=action,
+                reason="network_error",
+                extra=audit_extra,
+            )
+            raise ConnectorTransient(
+                "network error talking to Microsoft Graph"
+            ) from exc
+
+    await raise_for_graph_status(
+        response_for_status,
+        session=ctx.session,
+        firm_id=firm_id_str,
+        user_id=user_id_str,
+        action=action,
+        allow_not_found=False,
+        extra=response_for_status_extra,
+    )
+
+    raw = response.json()
+    message = _parse_full_message(raw)
+
+    success_payload: dict[str, Any] = {
+        "user_id": user_id_str,
+        "draft_id": message.id,
+        "recipient_count": len(to),
+    }
+    if in_reply_to is not None:
+        success_payload["in_reply_to"] = in_reply_to
+
+    await append_audit(
+        ctx.session,
+        firm_id=firm_id_str,
+        actor_type="user",
+        actor_id=user_id_str,
+        action=action,
+        payload=success_payload,
+    )
+    await ctx.session.commit()
+
+    return message
+
+
+def _build_draft_payload(
+    *,
+    to: list[str],
+    subject: str,
+    body: str,
+    body_content_type: Literal["html", "text"],
+    cc: list[str] | None,
+    bcc: list[str] | None,
+) -> dict[str, Any]:
+    """Assemble the Graph draft / patch JSON body.
+
+    Recipients are wrapped into Graph's ``{emailAddress: {address}}``
+    shape. ``cc`` and ``bcc`` are only included when explicitly
+    provided so callers who don't set them don't accidentally clear
+    existing values on a reply PATCH.
+    """
+    payload: dict[str, Any] = {
+        "subject": subject,
+        "body": {"contentType": body_content_type, "content": body},
+        "toRecipients": [_email_address_block(addr) for addr in to],
+    }
+    if cc is not None:
+        payload["ccRecipients"] = [_email_address_block(addr) for addr in cc]
+    if bcc is not None:
+        payload["bccRecipients"] = [_email_address_block(addr) for addr in bcc]
+    return payload
+
+
+def _email_address_block(address: str) -> dict[str, Any]:
+    return {"emailAddress": {"address": address}}
 
 
 def _parse_inbox_message(raw: dict[str, Any]) -> InboxMessage:

@@ -29,6 +29,7 @@ from coworker.connectors.exceptions import (
     ConnectorRateLimited,
     ConnectorTransient,
 )
+from coworker.connectors.shadow_mode import ShadowModeBlocked
 from coworker.db.models.audit import AuditLogEntry
 from coworker.db.models.tenancy import Firm, User
 from coworker.db.session import _attach_pool_listeners, firm_context
@@ -38,6 +39,7 @@ from coworker.graph.mail import (
     FullEmailMessage,
     InboxAddress,
     InboxMessage,
+    create_draft,
     get_attachment,
     get_message,
     list_inbox,
@@ -96,8 +98,15 @@ async def _delete_test_firm(sessionmaker, firm_id: uuid.UUID) -> None:
             await session.commit()
 
 
-def _seed(sessionmaker, *, slug: str) -> tuple[uuid.UUID, uuid.UUID]:
-    """Seed a minimal firm + user. Returns (firm_id, user_id)."""
+def _seed(
+    sessionmaker, *, slug: str, shadow_mode: bool = False
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Seed a minimal firm + user. Returns (firm_id, user_id).
+
+    ``shadow_mode`` defaults to False so the seeded firm can exercise
+    write paths in tests; the production Firm default remains True
+    (a firm is in shadow mode until the principal explicitly graduates).
+    """
 
     async def _run() -> tuple[uuid.UUID, uuid.UUID]:
         firm_id = uuid.uuid4()
@@ -108,6 +117,7 @@ def _seed(sessionmaker, *, slug: str) -> tuple[uuid.UUID, uuid.UUID]:
                     id=firm_id,
                     name="Mail Test Firm",
                     slug=slug,
+                    shadow_mode=shadow_mode,
                     azure_tenant_id=str(uuid.uuid4()),
                     azure_client_id=str(uuid.uuid4()),
                     azure_client_secret_ciphertext=encrypt_str(
@@ -1103,5 +1113,452 @@ def test_get_attachment_rejects_empty_ids(graph_mail_environment) -> None:
             await get_attachment(ctx, "", "a1")
         with pytest.raises(ValueError):
             await get_attachment(ctx, "m1", "")
+
+    _run_with_ctx(sm, firm_id, user_id, body)
+
+
+# =========================================================================
+# create_draft
+# =========================================================================
+
+
+def _draft_response(
+    *,
+    draft_id: str = "draft-1",
+    subject: str = "Re: Quarterly BAS",
+) -> dict:
+    """Graph-shaped response to POST /me/messages or PATCH /me/messages/{id}."""
+    return {
+        "id": draft_id,
+        "subject": subject,
+        "receivedDateTime": "2026-05-12T08:00:00Z",
+        "body": {"contentType": "html", "content": "<p>draft body</p>"},
+        "isRead": True,
+        "hasAttachments": False,
+        "conversationId": "conv-1",
+        "toRecipients": [
+            {"emailAddress": {"address": "alice@example.com", "name": "Alice"}}
+        ],
+        "ccRecipients": [],
+        "bccRecipients": [],
+        "from": {"emailAddress": {"address": "me@example.com"}},
+    }
+
+
+def test_create_draft_new_returns_message_and_audits(graph_mail_environment) -> None:
+    sm = graph_mail_environment["sessionmaker"]
+    created = graph_mail_environment["created_firm_ids"]
+
+    firm_id, user_id = _seed(
+        sm, slug=f"draft-new-{uuid.uuid4().hex[:8]}", shadow_mode=False
+    )
+    created.append(firm_id)
+
+    async def body(ctx: GraphContext) -> FullEmailMessage:
+        with respx.mock(assert_all_called=True) as rmock:
+            route = rmock.post(_GRAPH_MESSAGES_URL).mock(
+                return_value=httpx.Response(
+                    201, json=_draft_response(draft_id="new-draft-1")
+                )
+            )
+            message = await create_draft(
+                ctx,
+                to=["alice@example.com"],
+                subject="Hello",
+                body="<p>Hi Alice</p>",
+            )
+        sent = route.calls.last.request
+        assert sent.headers["Authorization"] == "Bearer bearer-xyz"
+        assert sent.headers["Content-Type"] == "application/json"
+        sent_payload = sent.read().decode()
+        assert "alice@example.com" in sent_payload
+        assert "Hi Alice" in sent_payload
+        assert "ccRecipients" not in sent_payload
+        return message
+
+    message = _run_with_ctx(sm, firm_id, user_id, body)
+    assert isinstance(message, FullEmailMessage)
+    assert message.id == "new-draft-1"
+
+    audits = _audit_entries(sm, firm_id)
+    success = [a for a in audits if a.action == "graph.mail.create_draft"]
+    assert len(success) == 1
+    assert success[0].payload["draft_id"] == "new-draft-1"
+    assert success[0].payload["recipient_count"] == 1
+    assert "in_reply_to" not in success[0].payload
+
+
+def test_create_draft_with_in_reply_to_does_two_step(
+    graph_mail_environment,
+) -> None:
+    sm = graph_mail_environment["sessionmaker"]
+    created = graph_mail_environment["created_firm_ids"]
+
+    firm_id, user_id = _seed(
+        sm, slug=f"draft-reply-{uuid.uuid4().hex[:8]}", shadow_mode=False
+    )
+    created.append(firm_id)
+
+    orig_id = "orig-msg-42"
+    reply_draft_id = "AAMk-reply-draft"
+
+    async def body(ctx: GraphContext) -> FullEmailMessage:
+        reply_url = f"{_GRAPH_MESSAGES_URL}/{orig_id}/createReply"
+        patch_url = f"{_GRAPH_MESSAGES_URL}/{reply_draft_id}"
+        with respx.mock(assert_all_called=True) as rmock:
+            reply_route = rmock.post(reply_url).mock(
+                return_value=httpx.Response(
+                    201, json=_draft_response(draft_id=reply_draft_id)
+                )
+            )
+            patch_route = rmock.patch(patch_url).mock(
+                return_value=httpx.Response(
+                    200, json=_draft_response(draft_id=reply_draft_id)
+                )
+            )
+            message = await create_draft(
+                ctx,
+                to=["alice@example.com"],
+                subject="Re: BAS",
+                body="<p>Reply body</p>",
+                in_reply_to=orig_id,
+            )
+        assert reply_route.called
+        assert patch_route.called
+        # PATCH carries the new content; createReply was empty
+        patch_payload = patch_route.calls.last.request.read().decode()
+        assert "Reply body" in patch_payload
+        return message
+
+    message = _run_with_ctx(sm, firm_id, user_id, body)
+    assert message.id == reply_draft_id
+
+    audits = _audit_entries(sm, firm_id)
+    success = [a for a in audits if a.action == "graph.mail.create_draft"]
+    assert len(success) == 1
+    assert success[0].payload["in_reply_to"] == orig_id
+    assert success[0].payload["draft_id"] == reply_draft_id
+
+
+def test_create_draft_includes_cc_and_bcc(graph_mail_environment) -> None:
+    sm = graph_mail_environment["sessionmaker"]
+    created = graph_mail_environment["created_firm_ids"]
+
+    firm_id, user_id = _seed(
+        sm, slug=f"draft-cc-{uuid.uuid4().hex[:8]}", shadow_mode=False
+    )
+    created.append(firm_id)
+
+    async def body(ctx: GraphContext) -> None:
+        with respx.mock(assert_all_called=True) as rmock:
+            route = rmock.post(_GRAPH_MESSAGES_URL).mock(
+                return_value=httpx.Response(201, json=_draft_response())
+            )
+            await create_draft(
+                ctx,
+                to=["alice@example.com"],
+                subject="Hi",
+                body="hello",
+                cc=["bob@example.com"],
+                bcc=["carol@example.com"],
+            )
+        sent_payload = route.calls.last.request.read().decode()
+        assert "alice@example.com" in sent_payload
+        assert "bob@example.com" in sent_payload
+        assert "carol@example.com" in sent_payload
+        assert "ccRecipients" in sent_payload
+        assert "bccRecipients" in sent_payload
+
+    _run_with_ctx(sm, firm_id, user_id, body)
+
+
+def test_create_draft_body_content_type_text(graph_mail_environment) -> None:
+    sm = graph_mail_environment["sessionmaker"]
+    created = graph_mail_environment["created_firm_ids"]
+
+    firm_id, user_id = _seed(
+        sm, slug=f"draft-text-{uuid.uuid4().hex[:8]}", shadow_mode=False
+    )
+    created.append(firm_id)
+
+    async def body(ctx: GraphContext) -> None:
+        with respx.mock(assert_all_called=True) as rmock:
+            route = rmock.post(_GRAPH_MESSAGES_URL).mock(
+                return_value=httpx.Response(201, json=_draft_response())
+            )
+            await create_draft(
+                ctx,
+                to=["alice@example.com"],
+                subject="Hi",
+                body="plain text body",
+                body_content_type="text",
+            )
+        sent_payload = route.calls.last.request.read().decode()
+        assert '"contentType": "text"' in sent_payload or '"contentType":"text"' in sent_payload
+
+    _run_with_ctx(sm, firm_id, user_id, body)
+
+
+def test_create_draft_in_shadow_mode_blocks_with_no_http_call(
+    graph_mail_environment,
+) -> None:
+    """guard_writable raises before any Graph call when firm.shadow_mode=True."""
+    sm = graph_mail_environment["sessionmaker"]
+    created = graph_mail_environment["created_firm_ids"]
+
+    firm_id, user_id = _seed(
+        sm, slug=f"draft-shadow-{uuid.uuid4().hex[:8]}", shadow_mode=True
+    )
+    created.append(firm_id)
+
+    async def body(ctx: GraphContext) -> None:
+        # respx.mock() with no configured routes asserts all requests
+        # are mocked; if create_draft tried to make a Graph call, the
+        # call would raise AllMockedAssertionError instead of
+        # ShadowModeBlocked.
+        with respx.mock() as rmock:  # noqa: F841
+            with pytest.raises(ShadowModeBlocked) as excinfo:
+                await create_draft(
+                    ctx,
+                    to=["alice@example.com"],
+                    subject="Hi",
+                    body="hello",
+                )
+            assert excinfo.value.action == "email.create_draft"
+
+    _run_with_ctx(sm, firm_id, user_id, body)
+
+    audits = _audit_entries(sm, firm_id)
+    # No success audit; one shadow_blocked audit (from guard_writable).
+    assert not any(a.action == "graph.mail.create_draft" for a in audits)
+    blocked = [a for a in audits if a.action == "shadow_blocked.email.create_draft"]
+    assert len(blocked) == 1
+    assert blocked[0].payload["actor_id"] == str(user_id)
+
+
+def test_create_draft_post_401_raises_auth_error_and_audits(
+    graph_mail_environment,
+) -> None:
+    sm = graph_mail_environment["sessionmaker"]
+    created = graph_mail_environment["created_firm_ids"]
+
+    firm_id, user_id = _seed(
+        sm, slug=f"draft-401-{uuid.uuid4().hex[:8]}", shadow_mode=False
+    )
+    created.append(firm_id)
+
+    async def body(ctx: GraphContext) -> None:
+        with respx.mock(assert_all_called=True) as rmock:
+            rmock.post(_GRAPH_MESSAGES_URL).mock(
+                return_value=httpx.Response(401, json={"error": "unauthorized"})
+            )
+            with pytest.raises(ConnectorAuthError):
+                await create_draft(
+                    ctx,
+                    to=["alice@example.com"],
+                    subject="Hi",
+                    body="hello",
+                )
+
+    _run_with_ctx(sm, firm_id, user_id, body)
+
+    audits = _audit_entries(sm, firm_id)
+    failed = [a for a in audits if a.action == "graph.mail.create_draft_failed"]
+    assert len(failed) == 1
+    assert failed[0].payload["reason"] == "microsoft_401"
+    assert failed[0].payload["recipient_count"] == 1
+
+
+def test_create_draft_post_5xx_raises_transient(graph_mail_environment) -> None:
+    sm = graph_mail_environment["sessionmaker"]
+    created = graph_mail_environment["created_firm_ids"]
+
+    firm_id, user_id = _seed(
+        sm, slug=f"draft-5xx-{uuid.uuid4().hex[:8]}", shadow_mode=False
+    )
+    created.append(firm_id)
+
+    async def body(ctx: GraphContext) -> None:
+        with respx.mock(assert_all_called=True) as rmock:
+            rmock.post(_GRAPH_MESSAGES_URL).mock(
+                return_value=httpx.Response(503)
+            )
+            with pytest.raises(ConnectorTransient):
+                await create_draft(
+                    ctx,
+                    to=["alice@example.com"],
+                    subject="Hi",
+                    body="hello",
+                )
+
+    _run_with_ctx(sm, firm_id, user_id, body)
+
+
+def test_create_draft_429_with_retry_after(graph_mail_environment) -> None:
+    sm = graph_mail_environment["sessionmaker"]
+    created = graph_mail_environment["created_firm_ids"]
+
+    firm_id, user_id = _seed(
+        sm, slug=f"draft-429-{uuid.uuid4().hex[:8]}", shadow_mode=False
+    )
+    created.append(firm_id)
+
+    async def body(ctx: GraphContext) -> None:
+        with respx.mock(assert_all_called=True) as rmock:
+            rmock.post(_GRAPH_MESSAGES_URL).mock(
+                return_value=httpx.Response(
+                    429, headers={"Retry-After": "11"}, json={"error": "throttled"}
+                )
+            )
+            with pytest.raises(ConnectorRateLimited) as excinfo:
+                await create_draft(
+                    ctx,
+                    to=["alice@example.com"],
+                    subject="Hi",
+                    body="hello",
+                )
+            assert excinfo.value.retry_after == 11.0
+
+    _run_with_ctx(sm, firm_id, user_id, body)
+
+
+def test_create_draft_network_error_raises_transient_and_audits(
+    graph_mail_environment,
+) -> None:
+    sm = graph_mail_environment["sessionmaker"]
+    created = graph_mail_environment["created_firm_ids"]
+
+    firm_id, user_id = _seed(
+        sm, slug=f"draft-net-{uuid.uuid4().hex[:8]}", shadow_mode=False
+    )
+    created.append(firm_id)
+
+    async def body(ctx: GraphContext) -> None:
+        with respx.mock(assert_all_called=True) as rmock:
+            rmock.post(_GRAPH_MESSAGES_URL).mock(
+                side_effect=httpx.ConnectError("no network")
+            )
+            with pytest.raises(ConnectorTransient):
+                await create_draft(
+                    ctx,
+                    to=["alice@example.com"],
+                    subject="Hi",
+                    body="hello",
+                )
+
+    _run_with_ctx(sm, firm_id, user_id, body)
+
+    audits = _audit_entries(sm, firm_id)
+    failed = [a for a in audits if a.action == "graph.mail.create_draft_failed"]
+    assert len(failed) == 1
+    assert failed[0].payload["reason"] == "network_error"
+
+
+def test_create_draft_reply_createreply_404(graph_mail_environment) -> None:
+    """First step (createReply) 404 — original message was deleted."""
+    sm = graph_mail_environment["sessionmaker"]
+    created = graph_mail_environment["created_firm_ids"]
+
+    firm_id, user_id = _seed(
+        sm, slug=f"draft-reply404-{uuid.uuid4().hex[:8]}", shadow_mode=False
+    )
+    created.append(firm_id)
+
+    orig_id = "deleted-msg"
+
+    async def body(ctx: GraphContext) -> None:
+        with respx.mock(assert_all_called=True) as rmock:
+            rmock.post(f"{_GRAPH_MESSAGES_URL}/{orig_id}/createReply").mock(
+                return_value=httpx.Response(404, json={"error": "not found"})
+            )
+            with pytest.raises(ConnectorNotFound):
+                await create_draft(
+                    ctx,
+                    to=["alice@example.com"],
+                    subject="Hi",
+                    body="hello",
+                    in_reply_to=orig_id,
+                )
+
+    _run_with_ctx(sm, firm_id, user_id, body)
+
+    audits = _audit_entries(sm, firm_id)
+    failed = [a for a in audits if a.action == "graph.mail.create_draft_failed"]
+    assert len(failed) == 1
+    assert failed[0].payload["reason"] == "microsoft_404"
+    assert failed[0].payload["step"] == "createReply"
+    assert failed[0].payload["in_reply_to"] == orig_id
+
+
+def test_create_draft_reply_patch_5xx(graph_mail_environment) -> None:
+    """Second step (PATCH) fails — createReply draft remains in Drafts.
+
+    The audit row records ``step=patch_reply`` and the draft_id so a
+    principal reading the chain can find the orphan and decide what
+    to do with it.
+    """
+    sm = graph_mail_environment["sessionmaker"]
+    created = graph_mail_environment["created_firm_ids"]
+
+    firm_id, user_id = _seed(
+        sm, slug=f"draft-patch5xx-{uuid.uuid4().hex[:8]}", shadow_mode=False
+    )
+    created.append(firm_id)
+
+    orig_id = "orig-msg"
+    half_draft_id = "half-formed"
+
+    async def body(ctx: GraphContext) -> None:
+        with respx.mock(assert_all_called=True) as rmock:
+            rmock.post(f"{_GRAPH_MESSAGES_URL}/{orig_id}/createReply").mock(
+                return_value=httpx.Response(
+                    201, json=_draft_response(draft_id=half_draft_id)
+                )
+            )
+            rmock.patch(f"{_GRAPH_MESSAGES_URL}/{half_draft_id}").mock(
+                return_value=httpx.Response(500)
+            )
+            with pytest.raises(ConnectorTransient):
+                await create_draft(
+                    ctx,
+                    to=["alice@example.com"],
+                    subject="Hi",
+                    body="hello",
+                    in_reply_to=orig_id,
+                )
+
+    _run_with_ctx(sm, firm_id, user_id, body)
+
+    audits = _audit_entries(sm, firm_id)
+    failed = [a for a in audits if a.action == "graph.mail.create_draft_failed"]
+    assert len(failed) == 1
+    assert failed[0].payload["reason"] == "microsoft_5xx"
+    assert failed[0].payload["step"] == "patch_reply"
+    assert failed[0].payload["draft_id"] == half_draft_id
+    assert failed[0].payload["in_reply_to"] == orig_id
+
+
+def test_create_draft_rejects_invalid_inputs(graph_mail_environment) -> None:
+    sm = graph_mail_environment["sessionmaker"]
+    created = graph_mail_environment["created_firm_ids"]
+
+    firm_id, user_id = _seed(
+        sm, slug=f"draft-input-{uuid.uuid4().hex[:8]}", shadow_mode=False
+    )
+    created.append(firm_id)
+
+    async def body(ctx: GraphContext) -> None:
+        with pytest.raises(ValueError):
+            await create_draft(ctx, to=[], subject="x", body="x")
+        with pytest.raises(ValueError):
+            await create_draft(ctx, to=[""], subject="x", body="x")
+        with pytest.raises(ValueError):
+            await create_draft(
+                ctx, to=["a@x"], subject="x", body="x", cc=[""]
+            )
+        with pytest.raises(ValueError):
+            await create_draft(
+                ctx, to=["a@x"], subject="x", body="x", in_reply_to=""
+            )
 
     _run_with_ctx(sm, firm_id, user_id, body)
