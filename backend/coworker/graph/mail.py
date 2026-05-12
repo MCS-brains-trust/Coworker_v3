@@ -1,32 +1,39 @@
 """Microsoft Graph mail operations.
 
-`list_inbox` is the day-one read endpoint: returns the signed-in user's
-most recent N messages, ordered by `receivedDateTime` descending.
+Three read entry points so far:
+
+- ``list_inbox`` — page of recent messages with narrow projection.
+- ``get_message`` — one full message including body and recipients.
+- ``get_attachment`` — one attachment by id, with bytes decoded when
+  the type is ``fileAttachment``.
 
 Every call:
 
 - Acquires a slot from the per-process rate limiter (global token
   bucket + per-mailbox semaphore).
-- Hits ``GET /me/messages`` with a fixed ``$select`` projection so we
-  don't ship megabytes of HTML body across the wire just to render an
-  inbox list. Phase 4 will introduce a separate ``get_message`` for
-  the full body when the orchestrator needs it.
-- Maps Graph's response into ``InboxMessage`` (Pydantic v2). The
-  Graph schema is wide and noisy — we expose a stable, narrow shape
-  to plugins so they don't grow accidental dependencies on Graph's
+- Uses a fixed ``$select`` projection where the endpoint accepts one,
+  so we don't ship fields we don't model.
+- Maps Graph's response into a frozen Pydantic v2 model. The Graph
+  schema is wide and noisy — we expose stable, narrow shapes to
+  plugins so they don't grow accidental dependencies on Graph's
   surface.
-- Audits ``graph.mail.list_inbox`` with the count and ``$top``
-  parameter so the audit chain captures every external-system read.
+- Audits ``graph.mail.<action>`` on success with structured payload,
+  and ``graph.mail.<action>_failed`` on every non-2xx with a
+  ``reason`` field, so the audit chain captures every external-system
+  read.
 - Normalises HTTP errors into the connector taxonomy
-  (``ConnectorAuthError`` / ``ConnectorRateLimited`` /
-  ``ConnectorTransient``).
+  (``ConnectorAuthError`` / ``ConnectorNotFound`` /
+  ``ConnectorRateLimited`` / ``ConnectorTransient``).
 
 Caller invariant: ``ctx.session`` has ``firm_context(ctx.firm.id)``
 already entered. ``graph_context`` enters it on the request scope, so
-every route consuming this function is fine.
+every route consuming these functions is fine.
 """
+import base64
+import binascii
 import datetime as _dt
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -34,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from coworker.connectors.exceptions import (
     ConnectorAuthError,
+    ConnectorNotFound,
     ConnectorRateLimited,
     ConnectorTransient,
 )
@@ -57,6 +65,24 @@ _SELECT_FIELDS = ",".join([
     "isRead",
     "hasAttachments",
 ])
+
+# Fuller projection for `get_message`: full body + all recipient lists
+# + conversationId for thread reconstruction in Phase 4 memory.
+_FULL_MESSAGE_SELECT_FIELDS = ",".join([
+    "id",
+    "subject",
+    "from",
+    "toRecipients",
+    "ccRecipients",
+    "bccRecipients",
+    "receivedDateTime",
+    "body",
+    "isRead",
+    "hasAttachments",
+    "conversationId",
+])
+
+AttachmentType = Literal["file", "item", "reference", "unknown"]
 
 
 class InboxAddress(BaseModel):
@@ -89,6 +115,75 @@ class InboxMessage(BaseModel):
     has_attachments: bool
 
 
+class EmailBody(BaseModel):
+    """Message body — content plus its declared type.
+
+    Graph returns ``contentType`` as either ``"html"`` or ``"text"``;
+    we preserve that verbatim and leave any sanitisation / conversion
+    to the caller (vision, memory, Smart Responder all want different
+    things).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    content_type: Literal["html", "text"]
+    content: str
+
+
+class FullEmailMessage(BaseModel):
+    """A single message with full body and all recipients.
+
+    Returned by ``get_message``. Distinct from ``InboxMessage`` so the
+    list-view projection (narrow, fast) and the read-one projection
+    (wide, complete) can evolve independently.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    subject: str
+    sender: InboxAddress | None = None
+    to_recipients: list[InboxAddress] = Field(default_factory=list)
+    cc_recipients: list[InboxAddress] = Field(default_factory=list)
+    bcc_recipients: list[InboxAddress] = Field(default_factory=list)
+    received_at: _dt.datetime
+    body: EmailBody
+    is_read: bool
+    has_attachments: bool
+    conversation_id: str | None = None
+
+
+class EmailAttachment(BaseModel):
+    """An attachment fetched via ``get_attachment``.
+
+    Graph has three attachment types: ``fileAttachment`` (the common
+    case — has ``contentBytes`` base64), ``itemAttachment`` (an
+    embedded message / event / contact), and ``referenceAttachment``
+    (a link to an external file, e.g. SharePoint). We surface the
+    discriminator on ``attachment_type`` and only populate ``content``
+    for ``file``. Callers that need item / reference payloads can
+    branch on ``attachment_type`` and fetch the specialised endpoint
+    in a later phase; for Phase 3 the vision pipeline and the
+    correspondence logger only care about file attachments.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    attachment_type: AttachmentType
+    name: str
+    content_type: str | None
+    size: int
+    is_inline: bool
+    content: bytes | None = Field(
+        default=None,
+        description=(
+            "Decoded bytes for fileAttachment; None for item / "
+            "reference / unknown types."
+        ),
+    )
+
+
 async def list_inbox(
     ctx: GraphContext, *, top: int = _DEFAULT_TOP
 ) -> list[InboxMessage]:
@@ -116,6 +211,7 @@ async def list_inbox(
     mailbox_id = str(ctx.user.id)
     firm_id_str = str(ctx.firm.id)
     user_id_str = str(ctx.user.id)
+    action = "graph.mail.list_inbox"
 
     rate_limiter = get_rate_limiter()
     async with rate_limiter.slot(mailbox_id):
@@ -132,55 +228,37 @@ async def list_inbox(
                 )
         except httpx.RequestError as exc:
             await _audit_failure(
-                ctx.session, firm_id_str, user_id_str, "network_error"
+                ctx.session,
+                firm_id=firm_id_str,
+                user_id=user_id_str,
+                action=action,
+                reason="network_error",
             )
             raise ConnectorTransient(
                 "network error talking to Microsoft Graph"
             ) from exc
 
-    status = response.status_code
-
-    if status == 401 or status == 403:
-        await _audit_failure(
-            ctx.session, firm_id_str, user_id_str, f"microsoft_{status}"
-        )
-        raise ConnectorAuthError(
-            f"Microsoft Graph rejected request: HTTP {status}"
-        )
-    if status == 429:
-        retry_after = _parse_retry_after(response.headers.get("Retry-After"))
-        await _audit_failure(
-            ctx.session, firm_id_str, user_id_str, "microsoft_429"
-        )
-        raise ConnectorRateLimited(retry_after=retry_after)
-    if 500 <= status < 600:
-        await _audit_failure(
-            ctx.session, firm_id_str, user_id_str, "microsoft_5xx"
-        )
-        raise ConnectorTransient(
-            f"Microsoft Graph returned {status}"
-        )
-    if status >= 400:
-        # Anything else 4xx (e.g. 400 bad query) — treat as auth-class
-        # for now (caller can't recover automatically). XPM/FuseSign
-        # connectors may grow a finer-grained ConnectorPermanent later.
-        await _audit_failure(
-            ctx.session, firm_id_str, user_id_str, f"microsoft_{status}"
-        )
-        raise ConnectorAuthError(
-            f"Microsoft Graph returned {status}"
-        )
+    # ``list_inbox`` does not raise ConnectorNotFound — a list endpoint
+    # returns 200 with an empty array when nothing matches, not 404.
+    await _raise_for_status(
+        response,
+        session=ctx.session,
+        firm_id=firm_id_str,
+        user_id=user_id_str,
+        action=action,
+        allow_not_found=False,
+    )
 
     body = response.json()
     raw_messages = body.get("value", [])
-    messages = [_parse_message(m) for m in raw_messages]
+    messages = [_parse_inbox_message(m) for m in raw_messages]
 
     await append_audit(
         ctx.session,
         firm_id=firm_id_str,
         actor_type="user",
         actor_id=user_id_str,
-        action="graph.mail.list_inbox",
+        action=action,
         payload={
             "user_id": user_id_str,
             "count": len(messages),
@@ -192,31 +270,295 @@ async def list_inbox(
     return messages
 
 
-def _parse_message(raw: dict[str, Any]) -> InboxMessage:
+async def get_message(ctx: GraphContext, message_id: str) -> FullEmailMessage:
+    """Fetch a single message in full, including body and recipients.
+
+    Args:
+        ctx: per-request Graph bundle. ``ctx.session`` must already
+            be inside ``firm_context(ctx.firm.id)``.
+        message_id: Graph message id, as returned by ``list_inbox`` or
+            received via webhook. Embedded in the URL path; percent-
+            encoded before sending so ids containing ``/`` or ``=``
+            are safe.
+
+    Raises:
+        ConnectorAuthError: 401 / 403 from Microsoft, or any other
+            unhandled 4xx.
+        ConnectorNotFound: 404 from Microsoft (message deleted /
+            never existed / not visible to this mailbox).
+        ConnectorRateLimited: 429 from Microsoft.
+        ConnectorTransient: 5xx, timeout, or network error.
+        ValueError: ``message_id`` is empty.
+    """
+    if not message_id:
+        raise ValueError("message_id must be non-empty")
+
+    mailbox_id = str(ctx.user.id)
+    firm_id_str = str(ctx.firm.id)
+    user_id_str = str(ctx.user.id)
+    action = "graph.mail.get_message"
+    url = f"{_MESSAGES_ENDPOINT}/{quote(message_id, safe='')}"
+
+    rate_limiter = get_rate_limiter()
+    async with rate_limiter.slot(mailbox_id):
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                response = await http.get(
+                    url,
+                    params={"$select": _FULL_MESSAGE_SELECT_FIELDS},
+                    headers={"Authorization": f"Bearer {ctx.access_token}"},
+                )
+        except httpx.RequestError as exc:
+            await _audit_failure(
+                ctx.session,
+                firm_id=firm_id_str,
+                user_id=user_id_str,
+                action=action,
+                reason="network_error",
+                extra={"message_id": message_id},
+            )
+            raise ConnectorTransient(
+                "network error talking to Microsoft Graph"
+            ) from exc
+
+    await _raise_for_status(
+        response,
+        session=ctx.session,
+        firm_id=firm_id_str,
+        user_id=user_id_str,
+        action=action,
+        allow_not_found=True,
+        extra={"message_id": message_id},
+    )
+
+    raw = response.json()
+    message = _parse_full_message(raw)
+
+    await append_audit(
+        ctx.session,
+        firm_id=firm_id_str,
+        actor_type="user",
+        actor_id=user_id_str,
+        action=action,
+        payload={
+            "user_id": user_id_str,
+            "message_id": message.id,
+            "has_attachments": message.has_attachments,
+        },
+    )
+    await ctx.session.commit()
+
+    return message
+
+
+async def get_attachment(
+    ctx: GraphContext, message_id: str, attachment_id: str
+) -> EmailAttachment:
+    """Fetch one attachment of a message.
+
+    ``fileAttachment`` content is base64-decoded into ``content``.
+    For ``itemAttachment`` and ``referenceAttachment`` the metadata is
+    returned with ``content=None``; callers needing the embedded item
+    or the reference URL fetch the specialised endpoint themselves
+    (out of scope for Phase 3).
+
+    Args:
+        ctx: per-request Graph bundle. ``ctx.session`` must already
+            be inside ``firm_context(ctx.firm.id)``.
+        message_id: parent message id.
+        attachment_id: attachment id (as listed in the parent
+            message's ``attachments`` collection).
+
+    Raises:
+        ConnectorAuthError: 401 / 403 from Microsoft, or any other
+            unhandled 4xx.
+        ConnectorNotFound: 404 (message or attachment not found).
+        ConnectorRateLimited: 429 from Microsoft.
+        ConnectorTransient: 5xx, timeout, or network error.
+        ValueError: ``message_id`` or ``attachment_id`` is empty, or
+            Graph returned a fileAttachment with invalid base64.
+    """
+    if not message_id:
+        raise ValueError("message_id must be non-empty")
+    if not attachment_id:
+        raise ValueError("attachment_id must be non-empty")
+
+    mailbox_id = str(ctx.user.id)
+    firm_id_str = str(ctx.firm.id)
+    user_id_str = str(ctx.user.id)
+    action = "graph.mail.get_attachment"
+    url = (
+        f"{_MESSAGES_ENDPOINT}/{quote(message_id, safe='')}"
+        f"/attachments/{quote(attachment_id, safe='')}"
+    )
+
+    rate_limiter = get_rate_limiter()
+    async with rate_limiter.slot(mailbox_id):
+        try:
+            async with httpx.AsyncClient(timeout=60) as http:
+                response = await http.get(
+                    url,
+                    headers={"Authorization": f"Bearer {ctx.access_token}"},
+                )
+        except httpx.RequestError as exc:
+            await _audit_failure(
+                ctx.session,
+                firm_id=firm_id_str,
+                user_id=user_id_str,
+                action=action,
+                reason="network_error",
+                extra={
+                    "message_id": message_id,
+                    "attachment_id": attachment_id,
+                },
+            )
+            raise ConnectorTransient(
+                "network error talking to Microsoft Graph"
+            ) from exc
+
+    await _raise_for_status(
+        response,
+        session=ctx.session,
+        firm_id=firm_id_str,
+        user_id=user_id_str,
+        action=action,
+        allow_not_found=True,
+        extra={"message_id": message_id, "attachment_id": attachment_id},
+    )
+
+    raw = response.json()
+    attachment = _parse_attachment(raw)
+
+    await append_audit(
+        ctx.session,
+        firm_id=firm_id_str,
+        actor_type="user",
+        actor_id=user_id_str,
+        action=action,
+        payload={
+            "user_id": user_id_str,
+            "message_id": message_id,
+            "attachment_id": attachment.id,
+            "attachment_type": attachment.attachment_type,
+            "size": attachment.size,
+        },
+    )
+    await ctx.session.commit()
+
+    return attachment
+
+
+def _parse_inbox_message(raw: dict[str, Any]) -> InboxMessage:
     """Map a single Graph message dict into an ``InboxMessage``.
 
     Graph's `from` field is sometimes absent (drafts, calendar
     notifications, system mail). The schema permits None there.
     """
-    sender_block = raw.get("from")
-    sender: InboxAddress | None = None
-    if sender_block:
-        addr = sender_block.get("emailAddress", {})
-        email = addr.get("address")
-        if email:
-            sender = InboxAddress(email=email, name=addr.get("name"))
-
     return InboxMessage(
         id=raw["id"],
         subject=raw.get("subject") or "",
-        sender=sender,
-        received_at=_dt.datetime.fromisoformat(
-            raw["receivedDateTime"].replace("Z", "+00:00")
-        ),
+        sender=_parse_address(raw.get("from")),
+        received_at=_parse_graph_datetime(raw["receivedDateTime"]),
         preview=raw.get("bodyPreview") or "",
         is_read=bool(raw.get("isRead", False)),
         has_attachments=bool(raw.get("hasAttachments", False)),
     )
+
+
+def _parse_full_message(raw: dict[str, Any]) -> FullEmailMessage:
+    """Map a single Graph message dict into a ``FullEmailMessage``."""
+    body_block = raw.get("body") or {}
+    body_content_type = body_block.get("contentType") or "text"
+    if body_content_type not in ("html", "text"):
+        # Graph occasionally returns mixed-case ("HTML"); normalise.
+        body_content_type = body_content_type.lower()
+    if body_content_type not in ("html", "text"):
+        # Anything still outside our literal — fall back to text rather
+        # than crash on a perfectly readable message.
+        body_content_type = "text"
+    body = EmailBody(
+        content_type=body_content_type,  # type: ignore[arg-type]
+        content=body_block.get("content") or "",
+    )
+
+    return FullEmailMessage(
+        id=raw["id"],
+        subject=raw.get("subject") or "",
+        sender=_parse_address(raw.get("from")),
+        to_recipients=_parse_address_list(raw.get("toRecipients")),
+        cc_recipients=_parse_address_list(raw.get("ccRecipients")),
+        bcc_recipients=_parse_address_list(raw.get("bccRecipients")),
+        received_at=_parse_graph_datetime(raw["receivedDateTime"]),
+        body=body,
+        is_read=bool(raw.get("isRead", False)),
+        has_attachments=bool(raw.get("hasAttachments", False)),
+        conversation_id=raw.get("conversationId"),
+    )
+
+
+def _parse_attachment(raw: dict[str, Any]) -> EmailAttachment:
+    """Map a single Graph attachment dict into ``EmailAttachment``."""
+    odata_type = raw.get("@odata.type", "")
+    attachment_type: AttachmentType
+    content: bytes | None = None
+    if odata_type.endswith("fileAttachment"):
+        attachment_type = "file"
+        encoded = raw.get("contentBytes")
+        if isinstance(encoded, str) and encoded:
+            try:
+                content = base64.b64decode(encoded, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise ValueError(
+                    f"Graph returned invalid base64 for attachment {raw.get('id')!r}"
+                ) from exc
+    elif odata_type.endswith("itemAttachment"):
+        attachment_type = "item"
+    elif odata_type.endswith("referenceAttachment"):
+        attachment_type = "reference"
+    else:
+        attachment_type = "unknown"
+
+    return EmailAttachment(
+        id=raw["id"],
+        attachment_type=attachment_type,
+        name=raw.get("name") or "",
+        content_type=raw.get("contentType"),
+        size=int(raw.get("size") or 0),
+        is_inline=bool(raw.get("isInline", False)),
+        content=content,
+    )
+
+
+def _parse_address(raw: dict[str, Any] | None) -> InboxAddress | None:
+    """Parse a Graph ``{emailAddress: {address, name}}`` block.
+
+    Returns None for missing blocks or blocks without an address.
+    """
+    if not raw:
+        return None
+    addr = raw.get("emailAddress") or {}
+    email = addr.get("address")
+    if not email:
+        return None
+    return InboxAddress(email=email, name=addr.get("name"))
+
+
+def _parse_address_list(raw: list[dict[str, Any]] | None) -> list[InboxAddress]:
+    """Parse a list of Graph recipient blocks, dropping any without an address."""
+    if not raw:
+        return []
+    parsed = [_parse_address(item) for item in raw]
+    return [addr for addr in parsed if addr is not None]
+
+
+def _parse_graph_datetime(value: str) -> _dt.datetime:
+    """Parse a Graph ISO-8601 timestamp into a tz-aware ``datetime``.
+
+    Graph uses trailing ``Z``; ``fromisoformat`` accepts it on Python
+    3.12+ but we normalise to ``+00:00`` for clarity and to keep
+    parity with Phase 2 helpers.
+    """
+    return _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def _parse_retry_after(header: str | None) -> float | None:
@@ -234,22 +576,112 @@ def _parse_retry_after(header: str | None) -> float | None:
         return None
 
 
-async def _audit_failure(
-    session: AsyncSession, firm_id: str, user_id: str, reason: str
+async def _raise_for_status(
+    response: httpx.Response,
+    *,
+    session: AsyncSession,
+    firm_id: str,
+    user_id: str,
+    action: str,
+    allow_not_found: bool,
+    extra: dict[str, Any] | None = None,
 ) -> None:
-    """Append a ``graph.mail.list_inbox_failed`` entry and commit.
+    """Audit + raise the right ConnectorError for a non-2xx Graph response.
 
-    Same pattern as `refresh_access_token`: failure audits commit
-    inside the helper so they survive any subsequent rollback in the
-    request scope (FastAPI exception propagation may discard the
-    session before it commits).
+    Centralised so every mail endpoint reports the same reason strings
+    to the audit log and maps the same status codes to the same
+    exception classes. ``allow_not_found`` is True for fetch-by-id
+    endpoints where 404 is a real "the thing was deleted" condition;
+    False for list endpoints where 404 should not happen and would be
+    a misconfigured caller.
     """
+    status = response.status_code
+    if 200 <= status < 300:
+        return
+
+    if status == 404 and allow_not_found:
+        await _audit_failure(
+            session,
+            firm_id=firm_id,
+            user_id=user_id,
+            action=action,
+            reason="microsoft_404",
+            extra=extra,
+        )
+        raise ConnectorNotFound(f"Microsoft Graph returned 404 for {action}")
+    if status == 401 or status == 403:
+        await _audit_failure(
+            session,
+            firm_id=firm_id,
+            user_id=user_id,
+            action=action,
+            reason=f"microsoft_{status}",
+            extra=extra,
+        )
+        raise ConnectorAuthError(
+            f"Microsoft Graph rejected request: HTTP {status}"
+        )
+    if status == 429:
+        retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+        await _audit_failure(
+            session,
+            firm_id=firm_id,
+            user_id=user_id,
+            action=action,
+            reason="microsoft_429",
+            extra=extra,
+        )
+        raise ConnectorRateLimited(retry_after=retry_after)
+    if 500 <= status < 600:
+        await _audit_failure(
+            session,
+            firm_id=firm_id,
+            user_id=user_id,
+            action=action,
+            reason="microsoft_5xx",
+            extra=extra,
+        )
+        raise ConnectorTransient(f"Microsoft Graph returned {status}")
+
+    # Anything else 4xx (e.g. 400 bad query) — treat as auth-class for
+    # now (caller can't recover automatically). XPM/FuseSign connectors
+    # may grow a finer-grained ConnectorPermanent later.
+    await _audit_failure(
+        session,
+        firm_id=firm_id,
+        user_id=user_id,
+        action=action,
+        reason=f"microsoft_{status}",
+        extra=extra,
+    )
+    raise ConnectorAuthError(f"Microsoft Graph returned {status}")
+
+
+async def _audit_failure(
+    session: AsyncSession,
+    *,
+    firm_id: str,
+    user_id: str,
+    action: str,
+    reason: str,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Append ``<action>_failed`` and commit.
+
+    Failure audits commit inside the helper so they survive any
+    subsequent rollback in the request scope (FastAPI exception
+    propagation may discard the session before it commits). Same
+    pattern as ``refresh_access_token``.
+    """
+    payload: dict[str, Any] = {"user_id": user_id, "reason": reason}
+    if extra:
+        payload.update(extra)
     await append_audit(
         session,
         firm_id=firm_id,
         actor_type="user",
         actor_id=user_id,
-        action="graph.mail.list_inbox_failed",
-        payload={"user_id": user_id, "reason": reason},
+        action=f"{action}_failed",
+        payload=payload,
     )
     await session.commit()

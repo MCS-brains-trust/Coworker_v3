@@ -7,7 +7,7 @@ failures that fall into the same coarse buckets, so callers
 uniformly rather than learning a separate exception family per
 connector.
 
-Three classes, intentionally coarse:
+Four classes, intentionally coarse:
 
   ConnectorAuthError    — credentials are invalid or unrecoverable.
                           The user must sign in again or the firm
@@ -18,6 +18,14 @@ Three classes, intentionally coarse:
                           tenant-side revocation), Anthropic 401,
                           undecryptable ciphertext (corrupt blob,
                           AAD mismatch, rotated master key).
+
+  ConnectorNotFound     — the requested resource does not exist
+                          (HTTP 404). Distinguished from
+                          ConnectorAuthError because a missing
+                          message / attachment / client is a normal
+                          condition the caller may want to surface
+                          gracefully ("that email has been deleted"),
+                          not an auth failure requiring re-sign-in.
 
   ConnectorRateLimited  — server told us to slow down (HTTP 429).
                           Carries `retry_after` (seconds) parsed
@@ -53,6 +61,16 @@ GraphConnectorError = ConnectorError
 
 class ConnectorAuthError(ConnectorError):
     """Credentials are invalid or unrecoverable; user must sign in again."""
+
+
+class ConnectorNotFound(ConnectorError):  # noqa: N818
+    """Requested resource does not exist (HTTP 404).
+
+    Name matches the architecture document's §3.1 taxonomy, which uses
+    state descriptors (NotFound, RateLimited, Transient) rather than
+    ``*Error`` suffixes. N818 is silenced here intentionally to match
+    the established convention.
+    """
 
 
 class ConnectorRateLimited(ConnectorError):
