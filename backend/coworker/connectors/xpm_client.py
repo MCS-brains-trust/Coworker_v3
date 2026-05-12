@@ -61,6 +61,13 @@ _TOKEN_ENDPOINT = "https://identity.xero.com/connect/token"
 _API_BASE = "https://api.xero.com/practicemanager/3.1"
 
 _TOKEN_REFRESH_BUFFER = _dt.timedelta(minutes=5)
+
+# Defensive cap on pagination. XPM tenants with thousands of clients
+# spread across hundreds of pages are realistic; 10,000 pages would
+# indicate a server-side loop in the Link headers (or a bug here that
+# fails to advance). Surfacing as a transient lets the caller retry
+# with a tighter filter rather than spin forever.
+_MAX_PAGINATION_PAGES = 10_000
 # Xero documents 30-min access tokens, but the actual expires_in
 # field on the response is authoritative. This default only applies
 # if the response omits expires_in (it doesn't, in practice — kept
@@ -217,8 +224,8 @@ class XPMClient:
                 uses this for nightly delta loads.
 
         Returns:
-            One page of clients. Pagination (Link: rel=next) is added
-            in 3E-5; for now callers get the first page only.
+            All clients across however many pages the response is
+            spread over. ``Link: rel="next"`` is followed transparently.
 
         Raises:
             ConnectorAuthError: 401 / 403 / other unhandled 4xx.
@@ -242,12 +249,14 @@ class XPMClient:
         if updated_since is not None:
             extra["modifiedsince"] = params["modifiedsince"]
 
-        response = await self._authenticated_get(
-            url=url, params=params, action=action, extra=extra
+        clients, pages = await self._list_all(
+            url=url,
+            params=params,
+            action=action,
+            extra=extra,
+            envelope_key="Clients",
+            parser=_parse_client_record,
         )
-        body = response.json()
-        raw_items = _extract_collection(body, key="Clients")
-        clients = [_parse_client_record(item) for item in raw_items]
 
         await append_audit(
             self._session,
@@ -258,6 +267,7 @@ class XPMClient:
             payload={
                 "user_id": self._actor_id,
                 "count": len(clients),
+                "pages": pages,
                 **extra,
             },
         )
@@ -323,11 +333,10 @@ class XPMClient:
             params["clientid"] = client_id
             extra["client_id"] = client_id
 
-        response = await self._authenticated_get(
-            url=url, params=params, action=action, extra=extra
+        jobs, pages = await self._list_all(
+            url=url, params=params, action=action, extra=extra,
+            envelope_key="Jobs", parser=_parse_job,
         )
-        raw_items = _extract_collection(response.json(), key="Jobs")
-        jobs = [_parse_job(item) for item in raw_items]
 
         await append_audit(
             self._session,
@@ -338,6 +347,7 @@ class XPMClient:
             payload={
                 "user_id": self._actor_id,
                 "count": len(jobs),
+                "pages": pages,
                 **extra,
             },
         )
@@ -359,11 +369,10 @@ class XPMClient:
             params["clientid"] = client_id
             extra["client_id"] = client_id
 
-        response = await self._authenticated_get(
-            url=url, params=params, action=action, extra=extra
+        invoices, pages = await self._list_all(
+            url=url, params=params, action=action, extra=extra,
+            envelope_key="Invoices", parser=_parse_invoice,
         )
-        raw_items = _extract_collection(response.json(), key="Invoices")
-        invoices = [_parse_invoice(item) for item in raw_items]
 
         await append_audit(
             self._session,
@@ -374,6 +383,7 @@ class XPMClient:
             payload={
                 "user_id": self._actor_id,
                 "count": len(invoices),
+                "pages": pages,
                 **extra,
             },
         )
@@ -433,11 +443,10 @@ class XPMClient:
         params: dict[str, Any] = {"clientid": client_id}
         extra: dict[str, Any] = {"client_id": client_id}
 
-        response = await self._authenticated_get(
-            url=url, params=params, action=action, extra=extra
+        rels, pages = await self._list_all(
+            url=url, params=params, action=action, extra=extra,
+            envelope_key="Relationships", parser=_parse_relationship,
         )
-        raw_items = _extract_collection(response.json(), key="Relationships")
-        rels = [_parse_relationship(item) for item in raw_items]
 
         await append_audit(
             self._session,
@@ -449,21 +458,77 @@ class XPMClient:
                 "user_id": self._actor_id,
                 "client_id": client_id,
                 "count": len(rels),
+                "pages": pages,
             },
         )
         await self._session.commit()
         return rels
 
-    async def _authenticated_get(
+    async def _list_all(
         self,
         *,
         url: str,
         params: dict[str, Any],
         action: str,
         extra: dict[str, Any],
+        envelope_key: str,
+        parser: Any,
+    ) -> tuple[list[Any], int]:
+        """Follow ``Link: rel="next"`` until exhausted; return all records + page count.
+
+        Each page goes through ``_authenticated_get`` separately, so a
+        failure on page 5 of 7 produces a single ``<action>_failed``
+        audit row for that page (not 5 success rows + 1 failure). The
+        caller's single success audit row at the end carries the total
+        count and ``pages`` so the audit log captures the size of the
+        list as one logical operation.
+
+        ``parser`` is a sync callable ``dict -> T`` applied to each
+        envelope entry.
+        """
+        records: list[Any] = []
+        pages = 0
+        next_url: str | None = url
+        # httpx treats ``params={}`` as "replace query string with
+        # empty" — passing it on follow-up pages would strip the
+        # ``?page=N`` Xero embedded in its next-link URL and we'd
+        # loop on page 1 forever. ``None`` means "don't touch the
+        # URL"; that's what we want for follow-up requests.
+        next_params: dict[str, Any] | None = params
+        while next_url is not None:
+            if pages >= _MAX_PAGINATION_PAGES:
+                raise ConnectorTransient(
+                    f"XPM pagination exceeded {_MAX_PAGINATION_PAGES} pages "
+                    f"for {action}; suspected upstream loop"
+                )
+            response = await self._authenticated_get(
+                url=next_url,
+                params=next_params,
+                action=action,
+                extra=extra,
+            )
+            raw_items = _extract_collection(response.json(), key=envelope_key)
+            records.extend(parser(item) for item in raw_items)
+            pages += 1
+            next_url = _next_link_url(response.headers.get("Link"))
+            next_params = None
+        return records, pages
+
+    async def _authenticated_get(
+        self,
+        *,
+        url: str,
+        params: dict[str, Any] | None,
+        action: str,
+        extra: dict[str, Any],
         allow_not_found: bool = False,
     ) -> httpx.Response:
         """GET with bearer token (refreshing if needed); audit + raise on error.
+
+        ``params=None`` means "don't touch the URL's query string";
+        an empty dict would strip an existing query string. Pass
+        ``None`` when ``url`` already carries the query (e.g. a
+        Link-header next-page URL), pass a dict to merge new params.
 
         Returns the response on 2xx. Callers parse ``response.json()``
         themselves so each method controls its own schema mapping.
@@ -753,6 +818,32 @@ def _parse_retry_after(header: str | None) -> float | None:
         return float(header)
     except (TypeError, ValueError):
         return None
+
+
+def _next_link_url(header: str | None) -> str | None:
+    """Extract the ``rel="next"`` URL from an RFC 5988 ``Link`` header.
+
+    Format example::
+
+        Link: <https://api.xero.com/.../list?page=2>; rel="next",
+              <https://api.xero.com/.../list?page=1>; rel="prev"
+
+    Returns the URL when a ``next`` relation is present, otherwise
+    None. Tolerates ``rel=next`` (unquoted) and minor whitespace
+    variation.
+    """
+    if header is None:
+        return None
+    for entry in header.split(","):
+        entry = entry.strip()
+        if 'rel="next"' not in entry and "rel=next" not in entry:
+            continue
+        start = entry.find("<")
+        end = entry.find(">", start + 1) if start != -1 else -1
+        if start == -1 or end == -1:
+            continue
+        return entry[start + 1 : end]
+    return None
 
 
 def _parse_xpm_datetime(value: str) -> _dt.datetime:

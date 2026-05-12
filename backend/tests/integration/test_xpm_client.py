@@ -1228,3 +1228,146 @@ def test_list_relationships_rejects_empty_client_id(xpm_environment) -> None:
             await client.list_relationships("")
 
     _run_with_firm(sm, firm_id, body)
+
+
+# =========================================================================
+# Pagination — Link: rel="next"
+# =========================================================================
+
+
+def _page_response_callback(*, mapping: dict[str, dict]):
+    """Return a respx side_effect that dispatches by exact URL match.
+
+    Required because respx's default route matching is path-based,
+    so multiple mocks with the same path (different query strings)
+    collide. A single side_effect dispatched by str(request.url) is
+    unambiguous.
+
+    ``mapping`` values are response specs (dicts with status / headers
+    / json), not pre-built Response objects, so each call gets a
+    fresh ``httpx.Response`` whose body hasn't been consumed.
+    """
+
+    def _dispatch(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        spec = mapping.get(url)
+        if spec is not None:
+            return httpx.Response(**spec)
+        return httpx.Response(
+            418,
+            json={"error": f"unmocked URL in pagination test: {url}"},
+        )
+
+    return _dispatch
+
+
+def test_list_clients_follows_link_rel_next_across_pages(
+    xpm_environment,
+) -> None:
+    """Three-page result: 2 + 2 + 1 = 5 records. Single audit row,
+    count=5, pages=3.
+    """
+    sm = xpm_environment["sessionmaker"]
+    created = xpm_environment["created_firm_ids"]
+
+    firm_id = _seed_with_valid_token(sm, slug=f"xpm-pag-{uuid.uuid4().hex[:8]}")
+    created.append(firm_id)
+
+    page2_url = f"{_CLIENTS_LIST_URL}?page=2"
+    page3_url = f"{_CLIENTS_LIST_URL}?page=3"
+
+    dispatcher = _page_response_callback(
+        mapping={
+            _CLIENTS_LIST_URL: {
+                "status_code": 200,
+                "headers": {"Link": f'<{page2_url}>; rel="next"'},
+                "json": {
+                    "Clients": [
+                        _client_payload(cid="c-1"),
+                        _client_payload(cid="c-2"),
+                    ]
+                },
+            },
+            page2_url: {
+                "status_code": 200,
+                "headers": {
+                    "Link": (
+                        f'<{page3_url}>; rel="next", '
+                        f'<{_CLIENTS_LIST_URL}>; rel="prev"'
+                    )
+                },
+                "json": {
+                    "Clients": [
+                        _client_payload(cid="c-3"),
+                        _client_payload(cid="c-4"),
+                    ]
+                },
+            },
+            page3_url: {
+                "status_code": 200,
+                "json": {"Clients": [_client_payload(cid="c-5")]},
+            },
+        }
+    )
+
+    async def body(session, firm):
+        client = XPMClient(firm, session=session)
+        with respx.mock(assert_all_called=True) as rmock:
+            rmock.get(
+                url__regex=(
+                    r"^https://api\.xero\.com/practicemanager/3\.1/clients\.api/list"
+                )
+            ).mock(side_effect=dispatcher)
+            return await client.list_clients()
+
+    clients = _run_with_firm(sm, firm_id, body)
+    assert [c.id for c in clients] == ["c-1", "c-2", "c-3", "c-4", "c-5"]
+
+    audits = _audit_entries(sm, firm_id)
+    success = [a for a in audits if a.action == "xpm.clients.list"]
+    assert len(success) == 1
+    assert success[0].payload["count"] == 5
+    assert success[0].payload["pages"] == 3
+
+
+def test_pagination_failure_on_second_page_audits_once_and_raises(
+    xpm_environment,
+) -> None:
+    """If page 2 returns 5xx, no success audit; one failure audit."""
+    sm = xpm_environment["sessionmaker"]
+    created = xpm_environment["created_firm_ids"]
+
+    firm_id = _seed_with_valid_token(sm, slug=f"xpm-pagfail-{uuid.uuid4().hex[:8]}")
+    created.append(firm_id)
+
+    page2_url = f"{_CLIENTS_LIST_URL}?page=2"
+
+    dispatcher = _page_response_callback(
+        mapping={
+            _CLIENTS_LIST_URL: {
+                "status_code": 200,
+                "headers": {"Link": f'<{page2_url}>; rel="next"'},
+                "json": {"Clients": [_client_payload(cid="c-1")]},
+            },
+            page2_url: {"status_code": 503},
+        }
+    )
+
+    async def body(session, firm):
+        client = XPMClient(firm, session=session)
+        with respx.mock(assert_all_called=True) as rmock:
+            rmock.get(
+                url__regex=(
+                    r"^https://api\.xero\.com/practicemanager/3\.1/clients\.api/list"
+                )
+            ).mock(side_effect=dispatcher)
+            with pytest.raises(ConnectorTransient):
+                await client.list_clients()
+
+    _run_with_firm(sm, firm_id, body)
+
+    audits = _audit_entries(sm, firm_id)
+    assert not any(a.action == "xpm.clients.list" for a in audits)
+    failed = [a for a in audits if a.action == "xpm.clients.list_failed"]
+    assert len(failed) == 1
+    assert failed[0].payload["reason"] == "xero_5xx"
