@@ -16,6 +16,7 @@ from coworker.connectors.anthropic_client import AnthropicClient
 from coworker.db.models import Firm
 
 if TYPE_CHECKING:
+    from coworker.graph.context import GraphContext
     from coworker.memory.embeddings import Embedder
 
 
@@ -47,6 +48,7 @@ class AgentContext:
     anthropic: AnthropicClient
     trace_id: uuid.UUID
     embedder: "Embedder | None" = None
+    graph_ctx: "GraphContext | None" = None
     budget_cents: int | None = None
     extended_thinking: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)

@@ -23,16 +23,23 @@ Not yet wired (will arrive when Phase 6 needs them):
 - vision_* (Phase 7)
 - approval_* (Phase 9)
 """
-from coworker.orchestrator.builtin_tools import clock, firm, kg, memory
+from coworker.orchestrator.builtin_tools import clock, email, firm, kg, memory
 from coworker.orchestrator.tools import ToolRegistry
 
 
 def register_builtin_tools(registry: ToolRegistry) -> None:
-    """Populate ``registry`` with the read-only / safe builtin tools."""
+    """Populate ``registry`` with every builtin tool.
+
+    Read-only tools (memory, kg, firm info, clock) and the email
+    tools (one read + two shadow-guarded writes) all register
+    here. PluginExecutor handles dry-run + per-plugin category
+    filtering before passing the slice to the engine.
+    """
     memory.register(registry)
     kg.register(registry)
     firm.register(registry)
     clock.register(registry)
+    email.register(registry)
 
 
 __all__ = ["register_builtin_tools"]
