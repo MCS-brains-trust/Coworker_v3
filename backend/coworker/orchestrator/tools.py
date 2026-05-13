@@ -67,8 +67,15 @@ _KNOWN_CATEGORIES: frozenset[str] = frozenset(
 
 
 # Async handler signature. The first argument is the parsed input
-# model; the second is the per-run context.
-ToolHandler = Callable[[BaseModel, AgentContext], Awaitable[Any]]
+# model (a subclass of BaseModel); the second is the per-run context.
+# ``Any`` on the first parameter avoids the typing-system pain of
+# function-argument contravariance: a handler typed as
+# ``(MemoryQueryInput, AgentContext) -> Awaitable[dict]`` should be
+# acceptable here, but ``Callable[[BaseModel, ...], ...]`` rejects it
+# because BaseModel is a supertype of MemoryQueryInput. The engine
+# validates the model BEFORE invoking, so runtime types are correct
+# even with the looser static type.
+ToolHandler = Callable[[Any, AgentContext], Awaitable[Any]]
 
 
 class ToolError(Exception):
