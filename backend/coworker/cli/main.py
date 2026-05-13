@@ -1,4 +1,5 @@
 import uuid
+from typing import Any
 
 import click
 from sqlalchemy import update
@@ -26,9 +27,11 @@ def create_firm(name: str, slug: str | None, abn: str | None, timezone_: str) ->
     """Create a new firm tenant."""
     import asyncio
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
     from slugify import slugify
-    from coworker.db.session import SessionLocal, firm_context
+
     from coworker.db.models.tenancy import Firm
+    from coworker.db.session import SessionLocal, firm_context
 
     if abn is not None and (len(abn) != 11 or not abn.isdigit()):
         raise click.BadParameter("ABN must be exactly 11 digits.", param_hint="--abn")
@@ -86,7 +89,6 @@ def bootstrap_firm(
     name/abn/timezone are left as-is. To change those, edit the row directly.
     """
     import asyncio
-
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
     from coworker.db.session import SessionLocal
@@ -131,6 +133,155 @@ def bootstrap_firm(
 
     firm_id = asyncio.run(_run())
     click.echo(str(firm_id))
+
+
+@cli.command("tokens")
+@click.option(
+    "--firm",
+    "firm_slug",
+    required=True,
+    help="Slug of the firm to report on (matches firms.slug).",
+)
+@click.option(
+    "--month",
+    "month",
+    required=True,
+    help="Reporting month in YYYY-MM format, UTC.",
+)
+@click.option(
+    "--flush/--no-flush",
+    "do_flush",
+    default=True,
+    show_default=True,
+    help=(
+        "Flush live Redis counters into Postgres before querying. "
+        "--no-flush is useful for testing or when the APScheduler "
+        "flush has already run."
+    ),
+)
+def tokens(firm_slug: str, month: str, do_flush: bool) -> None:
+    """Per-firm token-spend report for a given calendar month.
+
+    Aggregates the ``token_usage`` table by model and prints a small
+    table. Live Redis counters are flushed first by default so the
+    report includes today's data; pass ``--no-flush`` to skip.
+
+    Example:
+        coworker tokens --firm mcands --month 2026-05
+    """
+    import asyncio
+    import calendar as _cal
+    import datetime as _dt
+    import re as _re
+
+    from sqlalchemy import select
+
+    from coworker.db.firms import lookup_firm_by_slug
+    from coworker.db.models.token_usage import TokenUsageRow
+    from coworker.db.redis import get_redis
+    from coworker.db.session import SessionLocal, firm_context
+    from coworker.observability.token_meter import (
+        flush_token_meter_to_postgres,
+    )
+
+    match = _re.fullmatch(r"(\d{4})-(\d{2})", month)
+    if not match:
+        raise click.BadParameter(
+            f"Expected YYYY-MM, got {month!r}.", param_hint="--month"
+        )
+    year, mon = int(match.group(1)), int(match.group(2))
+    if not 1 <= mon <= 12:
+        raise click.BadParameter(
+            f"Month must be 01-12, got {mon:02d}.", param_hint="--month"
+        )
+    first_day = _dt.date(year, mon, 1)
+    last_day = _dt.date(year, mon, _cal.monthrange(year, mon)[1])
+
+    async def _run() -> tuple[str, list[TokenUsageRow]]:
+        sessionmaker = SessionLocal
+        if do_flush:
+            await flush_token_meter_to_postgres(get_redis(), sessionmaker)
+
+        async with sessionmaker() as session:
+            firm = await lookup_firm_by_slug(session, firm_slug)
+            if firm is None:
+                raise click.ClickException(
+                    f"No firm with slug {firm_slug!r}."
+                )
+            firm_id = firm.id
+            firm_name = firm.name
+            await session.commit()
+
+        async with sessionmaker() as session, firm_context(firm_id):
+            result = await session.execute(
+                select(TokenUsageRow)
+                .where(TokenUsageRow.firm_id == firm_id)
+                .where(TokenUsageRow.day >= first_day)
+                .where(TokenUsageRow.day <= last_day)
+                .order_by(TokenUsageRow.model, TokenUsageRow.day)
+            )
+            rows = list(result.scalars().all())
+
+        return firm_name, rows
+
+    firm_name, rows = asyncio.run(_run())
+    _render_token_report(
+        firm_slug=firm_slug,
+        firm_name=firm_name,
+        month=month,
+        rows=rows,
+    )
+
+
+def _render_token_report(
+    *,
+    firm_slug: str,
+    firm_name: str,
+    month: str,
+    rows: list[Any],
+) -> None:
+    """Print a per-model totals table for a token report."""
+    # Aggregate by model. dict preserves insertion order so the
+    # table follows the row ordering from the query
+    # (model ASC, day ASC).
+    totals: dict[str, dict[str, int]] = {}
+    for row in rows:
+        bucket = totals.setdefault(
+            row.model,
+            {"input_tokens": 0, "output_tokens": 0, "calls": 0},
+        )
+        bucket["input_tokens"] += int(row.input_tokens)
+        bucket["output_tokens"] += int(row.output_tokens)
+        bucket["calls"] += int(row.calls)
+
+    click.echo(
+        f"Token usage for firm '{firm_slug}' ({firm_name}) — {month}"
+    )
+    click.echo("=" * 72)
+    if not totals:
+        click.echo("(no usage recorded in this period)")
+        return
+
+    header = f"{'Model':<32} {'Input':>12} {'Output':>12} {'Calls':>10}"
+    click.echo(header)
+    click.echo("-" * 72)
+    grand = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+    for model, bucket in totals.items():
+        click.echo(
+            f"{model:<32} "
+            f"{bucket['input_tokens']:>12,} "
+            f"{bucket['output_tokens']:>12,} "
+            f"{bucket['calls']:>10,}"
+        )
+        for k in grand:
+            grand[k] += bucket[k]
+    click.echo("-" * 72)
+    click.echo(
+        f"{'TOTAL':<32} "
+        f"{grand['input_tokens']:>12,} "
+        f"{grand['output_tokens']:>12,} "
+        f"{grand['calls']:>10,}"
+    )
 
 
 async def _bootstrap_firm(
