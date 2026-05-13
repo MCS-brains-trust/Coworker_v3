@@ -3,10 +3,10 @@
 Every successful Anthropic call records ``(input_tokens, output_tokens, +1
 call)`` against a hash keyed by firm + model + UTC date. Counters live for
 35 days (just over a calendar month, covering a typical reporting window
-with a buffer). Phase 3H adds a nightly flush to Postgres for permanent
-retention; until then this Redis hash is the only source of token usage
-data, and that's deliberate — query latency under 1ms is non-negotiable
-for the orchestrator's cost-guard logic.
+with a buffer). Phase 3H-1 added a ``token_usage`` table for permanent
+retention; ``flush_token_meter_to_postgres`` (below) copies the live
+Redis hashes into it. Phase 6's APScheduler will call this nightly;
+the Phase 3H-3 CLI calls it on demand before producing a report.
 
 Hash layout::
 
@@ -21,10 +21,18 @@ covers all three counters — and lets us add new fields later (cached
 input tokens, thinking tokens, etc.) without changing the key schema.
 """
 import datetime as _dt
+import uuid
 
 from redis.asyncio import Redis
+from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from coworker.db.models.token_usage import TokenUsageRow
+from coworker.db.session import firm_context
 
 _DEFAULT_TTL_DAYS = 35
+_SCAN_BATCH = 200
 
 
 class TokenMeter:
@@ -99,3 +107,105 @@ class TokenMeter:
 
 def _key(*, firm_id: str, model: str, day: _dt.date) -> str:
     return f"tokens:{firm_id}:{model}:{day.isoformat()}"
+
+
+async def flush_token_meter_to_postgres(
+    redis: Redis,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> int:
+    """Read every ``tokens:*`` Redis hash and UPSERT into ``token_usage``.
+
+    Idempotent for re-runs: ``ON CONFLICT (firm_id, model, day) DO
+    UPDATE`` writes the live counters, so a re-flush mid-day picks
+    up additional records since the last flush. The Postgres value
+    always reflects the current Redis hash, not a sum across flushes.
+
+    Each row is committed in its own per-firm session under
+    ``firm_context``. RLS on ``token_usage`` requires
+    ``app.firm_id`` to match the row's firm_id at INSERT time;
+    opening a fresh session per row makes that contract explicit and
+    keeps the transactions tight (a single bad firm row doesn't roll
+    back hours of accumulated work).
+
+    Args:
+        redis: source of the live counters.
+        session_factory: opens per-row AsyncSessions. Pass
+            ``async_sessionmaker`` already bound to the production
+            engine; tests pass one bound to the test engine.
+
+    Returns:
+        Number of rows successfully UPSERTed. Malformed Redis keys
+        and empty hashes are skipped silently (defensive — the
+        record path never produces malformed keys, but a future
+        manual ``HSET`` outside the recorder's control shouldn't
+        crash the flush job).
+    """
+    flushed = 0
+    async for raw_key in redis.scan_iter(match="tokens:*", count=_SCAN_BATCH):
+        key = raw_key if isinstance(raw_key, str) else raw_key.decode()
+        parsed = _parse_meter_key(key)
+        if parsed is None:
+            continue
+        firm_id, model, day = parsed
+
+        # redis-py's hgetall typing is `Awaitable[dict] | dict`; the
+        # runtime is always awaitable in asyncio.Redis. Same narrow
+        # ignore as the usage() method above.
+        raw_fields = await redis.hgetall(key)  # type: ignore[misc]
+        if not raw_fields:
+            continue
+
+        input_tokens = int(raw_fields.get("input_tokens", 0))
+        output_tokens = int(raw_fields.get("output_tokens", 0))
+        calls = int(raw_fields.get("calls", 0))
+
+        async with session_factory() as session, firm_context(firm_id):
+            stmt = pg_insert(TokenUsageRow).values(
+                firm_id=firm_id,
+                model=model,
+                day=day,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                calls=calls,
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["firm_id", "model", "day"],
+                set_={
+                    "input_tokens": stmt.excluded.input_tokens,
+                    "output_tokens": stmt.excluded.output_tokens,
+                    "calls": stmt.excluded.calls,
+                    "updated_at": func.now(),
+                },
+            )
+            await session.execute(stmt)
+            await session.commit()
+
+        flushed += 1
+    return flushed
+
+
+def _parse_meter_key(key: str) -> tuple[uuid.UUID, str, _dt.date] | None:
+    """Parse ``tokens:{firm_uuid}:{model}:{day}`` into its components.
+
+    Model strings may contain hyphens (``claude-sonnet-4-6``) but not
+    colons — Anthropic model ids are colon-free in current and any
+    plausible future naming. ``rsplit`` on the day side and a single
+    split on the firm side makes the parser robust to model strings
+    even if they grew unusual punctuation.
+    """
+    if not key.startswith("tokens:"):
+        return None
+    rest = key[len("tokens:") :]
+    try:
+        firm_str, after_firm = rest.split(":", 1)
+        firm_id = uuid.UUID(firm_str)
+    except (ValueError, AttributeError):
+        return None
+    try:
+        model, day_str = after_firm.rsplit(":", 1)
+        day = _dt.date.fromisoformat(day_str)
+    except (ValueError, AttributeError):
+        return None
+    if not model:
+        return None
+    return firm_id, model, day
