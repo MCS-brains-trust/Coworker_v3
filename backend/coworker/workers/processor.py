@@ -1,0 +1,308 @@
+"""Plugin event processor — fans one event out to its listening plugins.
+
+The worker pool consumes ``queue:plugin_events`` and calls
+``process_event`` for each item. The processor:
+
+1. Looks up the firm and the (optional) mailbox-owner user.
+2. Builds an AgentContext per plugin: AnthropicClient (per-firm),
+   Embedder (shared, optional), GraphContext (for email_received
+   events — derived from the notification's ``resource`` path).
+3. Walks every plugin in the registry whose ``triggers`` include
+   the event's trigger and calls ``execute_plugin``.
+4. Returns the list of RunResults. Plugins not installed for the
+   firm are skipped silently (PluginNotInstalledError is caught);
+   any other PluginExecutionError or in-engine failure is
+   captured as a soft error in the returned list metadata.
+
+The BRPOP loop that wraps this is a follow-up commit — keeping
+the per-event logic isolated lets tests drive it without a real
+worker process.
+"""
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from coworker.connectors.anthropic_client import AnthropicClient
+from coworker.db.models import Firm, User
+from coworker.db.session import firm_context
+from coworker.graph.context import GraphContext
+from coworker.orchestrator.engine import (
+    ModelCaller,
+    OrchestratorEngine,
+    RunResult,
+)
+from coworker.orchestrator.tools import ToolRegistry
+from coworker.plugins.base import OrchestratorPlugin, PluginRegistry, PluginRun
+from coworker.plugins.executor import (
+    PluginConfigError,
+    PluginDisabledError,
+    PluginNotInstalledError,
+    execute_plugin,
+)
+from coworker.security.encryption import decrypt_str
+from coworker.workers.plugin_queue import PluginEvent
+
+if TYPE_CHECKING:
+    from coworker.memory.embeddings import Embedder
+
+# Factory: given a Firm row, return an AnthropicClient for it. The
+# default (``AnthropicClient(firm_id=str(firm.id))``) uses the
+# platform-shared API key from Settings; alternatives can read
+# firm.anthropic_api_key_ciphertext for per-firm BYO keys.
+AnthropicFactory = Callable[[Firm], AnthropicClient]
+
+
+def _default_anthropic_factory(firm: Firm) -> AnthropicClient:
+    return AnthropicClient(firm_id=str(firm.id))
+
+
+@dataclass
+class ProcessResult:
+    """Outcome of ``process_event`` for one (event, fan-out) pair.
+
+    ``run_results`` is one entry per plugin that ran. ``skipped``
+    is one entry per plugin we considered but didn't run (not
+    installed, disabled, config error). ``firm_not_found`` is a
+    short-circuit case when the firm row no longer exists for the
+    event's firm_id — typically a deleted firm.
+    """
+
+    event_id: uuid.UUID
+    firm_not_found: bool = False
+    run_results: list[RunResult] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+
+
+async def process_event(
+    event: PluginEvent,
+    *,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    plugin_registry: PluginRegistry,
+    tool_registry: ToolRegistry,
+    model_caller: ModelCaller,
+    embedder: "Embedder | None" = None,
+    anthropic_factory: AnthropicFactory = _default_anthropic_factory,
+) -> ProcessResult:
+    """Fan one event out to every plugin listening to its trigger.
+
+    Args:
+        event: the queued event.
+        sessionmaker: factory the processor uses to open the
+            session inside ``firm_context``. Caller owns the
+            sessionmaker's engine lifecycle.
+        plugin_registry: every known plugin. Filtered per-call by
+            the event's trigger.
+        tool_registry: the full builtin + plugin-contributed tool
+            catalogue. Sliced per-plugin in execute_plugin.
+        model_caller: the engine's model caller — production is
+            ``AnthropicClient.complete_tool_use``, tests pass a
+            ScriptedModelCaller.
+        embedder: shared embedder for memory_query, etc. Optional.
+        anthropic_factory: builds a per-firm AnthropicClient.
+            Default uses the platform-shared key from Settings.
+
+    Returns:
+        ``ProcessResult`` summarising what ran.
+    """
+    # event.trigger is a free-string in the dataclass (it survived
+    # JSON-roundtrip from the queue payload); cast to the Trigger
+    # Literal for the registry call. Unknown triggers will simply
+    # return no candidates.
+    candidates = plugin_registry.filter_by_trigger(event.trigger)  # type: ignore[arg-type]
+    if not candidates:
+        logger.debug(
+            "worker no plugins listening trigger={} event={}",
+            event.trigger,
+            event.event_id,
+        )
+        return ProcessResult(event_id=event.event_id)
+
+    # Lookup pass: confirm the firm exists. Closes the session
+    # immediately so each plugin run gets a fresh transaction —
+    # an exception in one plugin can't poison sibling iterations.
+    async with sessionmaker() as session, firm_context(event.firm_id):
+        firm_exists = (
+            await session.execute(
+                select(Firm.id).where(Firm.id == event.firm_id)
+            )
+        ).scalar_one_or_none() is not None
+
+    if not firm_exists:
+        logger.warning(
+            "worker firm not found firm_id={} event={}",
+            event.firm_id,
+            event.event_id,
+        )
+        return ProcessResult(event_id=event.event_id, firm_not_found=True)
+
+    result = ProcessResult(event_id=event.event_id)
+    for plugin_cls in candidates:
+        await _run_one_plugin(
+            plugin_cls,
+            event=event,
+            sessionmaker=sessionmaker,
+            tool_registry=tool_registry,
+            model_caller=model_caller,
+            embedder=embedder,
+            anthropic_factory=anthropic_factory,
+            result=result,
+        )
+    return result
+
+
+async def _run_one_plugin(
+    plugin_cls: type[OrchestratorPlugin],
+    *,
+    event: PluginEvent,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    tool_registry: ToolRegistry,
+    model_caller: ModelCaller,
+    embedder: "Embedder | None",
+    anthropic_factory: AnthropicFactory,
+    result: ProcessResult,
+) -> None:
+    """Execute a single plugin in its own session/transaction.
+
+    Each plugin gets a fresh session so a rollback in one doesn't
+    expire ORM objects used by the next. ``graph_ctx`` is resolved
+    inside this scope for email_received events but not yet threaded
+    through ``execute_plugin`` — Phase 6-8 carry-forward.
+    """
+    async with sessionmaker() as session, firm_context(event.firm_id):
+        firm = (
+            await session.execute(
+                select(Firm).where(Firm.id == event.firm_id)
+            )
+        ).scalar_one()
+
+        if event.trigger == "email_received":
+            # Constructed for side effects (logging on missing user)
+            # but not yet threaded through execute_plugin — Phase 6-8.
+            await _resolve_graph_ctx_for_email(
+                session, firm=firm, event=event
+            )
+
+        anthropic = anthropic_factory(firm)
+        engine = OrchestratorEngine(model_caller=model_caller)
+
+        run = PluginRun(
+            plugin_name=plugin_cls.name,
+            firm_id=firm.id,
+            trigger=event.trigger,  # type: ignore[arg-type]
+            event_data=event.event_data,
+            config={},
+            is_dry_run=False,
+            requested_at=event.enqueued_at,
+        )
+
+        try:
+            run_result = await execute_plugin(
+                plugin_cls,
+                run,
+                engine=engine,
+                tool_registry=tool_registry,
+                session=session,
+                firm=firm,
+                anthropic=anthropic,
+                embedder=embedder,
+            )
+            await session.commit()
+        except PluginNotInstalledError:
+            await session.rollback()
+            result.skipped.append(f"{plugin_cls.name}: not_installed")
+            return
+        except PluginDisabledError:
+            await session.rollback()
+            result.skipped.append(f"{plugin_cls.name}: disabled")
+            return
+        except PluginConfigError as exc:
+            await session.rollback()
+            logger.warning(
+                "worker plugin config error plugin={} event={} err={}",
+                plugin_cls.name,
+                event.event_id,
+                exc,
+            )
+            result.skipped.append(f"{plugin_cls.name}: config_error")
+            return
+        except Exception:
+            await session.rollback()
+            logger.exception(
+                "worker plugin execution crashed plugin={} event={}",
+                plugin_cls.name,
+                event.event_id,
+            )
+            result.skipped.append(f"{plugin_cls.name}: crashed")
+            return
+
+        result.run_results.append(run_result)
+
+
+async def _resolve_graph_ctx_for_email(
+    session: AsyncSession,
+    *,
+    firm: Firm,
+    event: PluginEvent,
+) -> GraphContext | None:
+    """Resolve a mailbox-owner GraphContext from an email_received event.
+
+    Microsoft's notification resource path is
+    ``users/{azure_object_id}/messages/{message_id}``. We extract
+    azure_object_id, look up the matching User, decrypt their
+    access token, and return a GraphContext. Returns None if any
+    step fails — the worker continues so the trace still records
+    what was attempted.
+
+    Token refresh: not done here. A stale token will surface as a
+    401 from the connector, which the engine records as a
+    tool_result with is_error. Proper proactive refresh waits for
+    Phase 11 (the renewal job will keep tokens fresh).
+    """
+    resource = event.event_data.get("resource")
+    if not isinstance(resource, str) or not resource.startswith("users/"):
+        return None
+    parts = resource.split("/", 4)
+    if len(parts) < 2:
+        return None
+    azure_oid = parts[1]
+
+    user = (
+        await session.execute(
+            select(User)
+            .where(User.firm_id == firm.id)
+            .where(User.azure_object_id == azure_oid)
+        )
+    ).scalar_one_or_none()
+    if user is None:
+        logger.warning(
+            "worker user not found firm_id={} azure_oid={}",
+            firm.id,
+            azure_oid,
+        )
+        return None
+    if user.ms_access_token_ciphertext is None:
+        logger.warning(
+            "worker user has no ms_access_token user_id={}",
+            user.id,
+        )
+        return None
+
+    try:
+        access_token = decrypt_str(
+            user.ms_access_token_ciphertext, firm_id=str(firm.id)
+        )
+    except Exception:
+        logger.exception(
+            "worker decrypt ms_access_token failed user_id={}",
+            user.id,
+        )
+        return None
+
+    return GraphContext(
+        firm=firm, user=user, access_token=access_token, session=session,
+    )
