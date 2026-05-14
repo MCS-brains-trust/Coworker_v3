@@ -101,7 +101,8 @@ class ApprovalItem(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'approved', 'rejected')",
+            "status IN ('pending', 'approved', 'rejected', "
+            "'sent', 'dispatch_failed')",
             name="approval_items_status_check",
         ),
     )

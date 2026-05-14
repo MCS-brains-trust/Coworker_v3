@@ -1,0 +1,16 @@
+[Unit]
+Description=Periodic approval dispatch for CoWorker v3
+Requires=coworker-dispatch.service
+
+[Timer]
+# Run every 1 minute. Once the principal hits Approve the
+# expectation is "draft appears in Outlook within a minute or two";
+# faster cadence costs little because the typical idle pass runs
+# a single SELECT and returns.
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
