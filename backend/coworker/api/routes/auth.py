@@ -40,10 +40,12 @@ import datetime as _dt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from loguru import logger
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from coworker.api.deps import current_user
 from coworker.config import get_settings
 from coworker.db.firms import lookup_firm_by_slug
 from coworker.db.models.tenancy import Firm, User
@@ -62,9 +64,10 @@ from coworker.security.oauth_state import (
 )
 from coworker.security.session import (
     DEFAULT_TTL_SECONDS as SESSION_TTL_SECONDS,
+)
+from coworker.security.session import (
     issue_session_jwt,
 )
-
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -79,6 +82,49 @@ def _client_log_fields(request: Request) -> dict[str, object]:
         "remote_ip": request.client.host if request.client else None,
         "user_agent": user_agent[:200],
     }
+
+
+class CurrentUserResponse(BaseModel):
+    """Outbound /auth/me shape.
+
+    Mirrors the User row but omits the per-firm Microsoft tokens —
+    the principal's browser doesn't need them. Firm slug is
+    denormalised so the frontend can build "/auth/microsoft/start/{slug}"
+    re-auth links without a follow-up call.
+    """
+
+    user_id: str
+    firm_id: str
+    firm_slug: str
+    upn: str
+    display_name: str
+    role: str
+
+
+@router.get("/me", response_model=CurrentUserResponse)
+async def me(
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> CurrentUserResponse:
+    """Return the authenticated principal's identity.
+
+    The frontend's CurrentUserProvider hits this on mount to
+    distinguish "signed in" from "401, redirect to login." Same
+    generic 401 shape as every other auth-required endpoint when
+    the cookie is missing / forged / expired.
+    """
+    async with firm_context(user.firm_id):
+        firm = (
+            await session.execute(select(Firm).where(Firm.id == user.firm_id))
+        ).scalar_one()
+    return CurrentUserResponse(
+        user_id=str(user.id),
+        firm_id=str(user.firm_id),
+        firm_slug=firm.slug,
+        upn=user.upn,
+        display_name=user.display_name,
+        role=user.role,
+    )
 
 
 @router.get("/microsoft/start/{firm_slug}")
@@ -211,10 +257,10 @@ async def auth_callback(
         refresh_token_ct = encrypt_str(
             token_response["refresh_token"], firm_id=firm_id_str
         )
-        expires_at = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(
+        expires_at = _dt.datetime.now(_dt.UTC) + _dt.timedelta(
             seconds=int(token_response["expires_in"])
         )
-        now = _dt.datetime.now(_dt.timezone.utc)
+        now = _dt.datetime.now(_dt.UTC)
 
         # 5) Upsert user row. Lookup by oid only — RLS scopes the SELECT
         # to this firm, and the schema has a global UNIQUE on

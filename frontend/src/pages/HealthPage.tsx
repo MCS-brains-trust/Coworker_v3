@@ -1,13 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { fetchHealth, type Health } from "@/api/health";
+import { useCurrentUser } from "@/auth/CurrentUserProvider";
 
 /**
- * Sanity page for Phase 10-1: confirms the Vite dev-server proxy
- * forwards /health to the FastAPI backend. The real principal
- * surface starts in Phase 10-3 with the approval queue.
+ * Sanity page that ships until Phase 10-3 replaces it with the
+ * approval queue. Renders the signed-in user from
+ * CurrentUserProvider plus a /health probe so we can see at a
+ * glance that the proxy is healthy.
  */
 export function HealthPage() {
+  const me = useCurrentUser();
   const { data, isPending, isError, error } = useQuery<Health, Error>({
     queryKey: ["health"],
     queryFn: fetchHealth,
@@ -15,12 +18,16 @@ export function HealthPage() {
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-12 font-sans">
-      <h1 className="text-2xl font-semibold tracking-tight">
-        MC &amp; S CoWorker
-      </h1>
-      <p className="mt-2 text-sm text-neutral-500">
-        Frontend scaffold — Phase 10-1.
-      </p>
+      <header className="flex items-baseline justify-between">
+        <h1 className="text-2xl font-semibold tracking-tight">
+          MC &amp; S CoWorker
+        </h1>
+        {me.status === "authenticated" && (
+          <span className="text-sm text-neutral-500">
+            {me.user.display_name} · {me.user.firm_slug}
+          </span>
+        )}
+      </header>
 
       <section className="mt-8 rounded-lg border border-neutral-200 bg-neutral-50 p-6">
         <h2 className="text-sm font-medium uppercase tracking-wider text-neutral-700">
