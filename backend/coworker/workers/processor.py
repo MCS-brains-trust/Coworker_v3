@@ -3,20 +3,20 @@
 The worker pool consumes ``queue:plugin_events`` and calls
 ``process_event`` for each item. The processor:
 
-1. Looks up the firm and the (optional) mailbox-owner user.
-2. Builds an AgentContext per plugin: AnthropicClient (per-firm),
-   Embedder (shared, optional), GraphContext (for email_received
-   events — derived from the notification's ``resource`` path).
-3. Walks every plugin in the registry whose ``triggers`` include
-   the event's trigger and calls ``execute_plugin``.
-4. Returns the list of RunResults. Plugins not installed for the
-   firm are skipped silently (PluginNotInstalledError is caught);
-   any other PluginExecutionError or in-engine failure is
-   captured as a soft error in the returned list metadata.
+1. Looks up the firm and confirms it exists.
+2. For every plugin whose ``triggers`` include the event's trigger,
+   opens a fresh session+transaction (so a rollback in one plugin
+   doesn't expire ORM state used by the next), resolves a
+   ``GraphContext`` for email_received events, and calls
+   ``execute_plugin``.
+3. Returns the list of RunResults. Plugins not installed for the
+   firm are recorded as ``skipped`` (PluginNotInstalledError /
+   PluginDisabledError / PluginConfigError); any other in-engine
+   failure is captured as ``crashed`` and the loop continues.
 
-The BRPOP loop that wraps this is a follow-up commit — keeping
-the per-event logic isolated lets tests drive it without a real
-worker process.
+The BRPOP wrapper (``coworker.workers.loop.run_worker``) drives
+this — keeping the per-event logic isolated lets tests exercise
+it without a real worker process.
 """
 import uuid
 from collections.abc import Callable
@@ -169,9 +169,10 @@ async def _run_one_plugin(
     """Execute a single plugin in its own session/transaction.
 
     Each plugin gets a fresh session so a rollback in one doesn't
-    expire ORM objects used by the next. ``graph_ctx`` is resolved
-    inside this scope for email_received events but not yet threaded
-    through ``execute_plugin`` — Phase 6-8 carry-forward.
+    expire ORM objects used by the next. For email_received events,
+    ``graph_ctx`` is resolved from the notification's mailbox-owner
+    and handed to ``execute_plugin`` so the plugin's email tools
+    can read the triggering message.
     """
     async with sessionmaker() as session, firm_context(event.firm_id):
         firm = (
@@ -180,10 +181,9 @@ async def _run_one_plugin(
             )
         ).scalar_one()
 
+        graph_ctx: GraphContext | None = None
         if event.trigger == "email_received":
-            # Constructed for side effects (logging on missing user)
-            # but not yet threaded through execute_plugin — Phase 6-8.
-            await _resolve_graph_ctx_for_email(
+            graph_ctx = await _resolve_graph_ctx_for_email(
                 session, firm=firm, event=event
             )
 
@@ -210,6 +210,7 @@ async def _run_one_plugin(
                 firm=firm,
                 anthropic=anthropic,
                 embedder=embedder,
+                graph_ctx=graph_ctx,
             )
             await session.commit()
         except PluginNotInstalledError:

@@ -39,6 +39,7 @@ from coworker.orchestrator.trace import AgentTraceWriter
 from coworker.plugins.base import OrchestratorPlugin, PluginRun
 
 if TYPE_CHECKING:
+    from coworker.graph.context import GraphContext
     from coworker.memory.embeddings import Embedder
 
 
@@ -75,6 +76,7 @@ async def execute_plugin(
     firm: Firm,
     anthropic: AnthropicClient,
     embedder: "Embedder | None" = None,
+    graph_ctx: "GraphContext | None" = None,
 ) -> RunResult:
     """Execute one plugin run end-to-end.
 
@@ -93,6 +95,12 @@ async def execute_plugin(
         firm: the firm the run is for.
         anthropic: per-firm AnthropicClient.
         embedder: optional Embedder for tools that need it.
+        graph_ctx: optional GraphContext for plugins that hold
+            Microsoft Graph user-context tools (read_email,
+            send_teams_message, …). Resolved at the entry layer
+            (webhook receiver / worker processor) from the event's
+            mailbox-owner user; None for triggers / plugins that
+            don't need Graph access.
 
     Returns:
         RunResult from the engine. status / completion_reason
@@ -170,6 +178,7 @@ async def execute_plugin(
         anthropic=anthropic,
         trace_id=trace_id,
         embedder=embedder,
+        graph_ctx=graph_ctx,
         budget_cents=plugin_cls.cost_budget_cents,
     )
 

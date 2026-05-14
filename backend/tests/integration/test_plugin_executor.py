@@ -525,3 +525,83 @@ async def test_firm_id_mismatch_raises_execution_error(executor_env) -> None:
                 firm=attached_firm,
                 anthropic=None,  # type: ignore[arg-type]
             )
+
+
+class _CtxCapturingEngine:
+    """Stand-in for OrchestratorEngine that captures the AgentContext.
+
+    Lets the test assert that ``execute_plugin`` propagates the
+    ``graph_ctx`` kwarg into the AgentContext seen by the engine.
+    """
+
+    def __init__(self) -> None:
+        self.captured_ctx = None
+
+    async def run(self, ctx, *, goal, tools, writer, system_prompt=None):
+        self.captured_ctx = ctx
+        from coworker.orchestrator.engine import STATUS_COMPLETED, RunResult
+        return RunResult(
+            trace_id=ctx.trace_id,
+            status=STATUS_COMPLETED,
+            completion_reason=None,
+            final_text="",
+            iterations=0,
+            total_input_tokens=0,
+            total_output_tokens=0,
+            total_cost_cents=0,
+        )
+
+
+async def test_graph_ctx_propagates_into_agent_context(executor_env) -> None:
+    """``execute_plugin(..., graph_ctx=X)`` ends up at ``ctx.graph_ctx``."""
+    sm = executor_env["sm"]
+    firm_id, firm = await _seed_firm(sm)
+    executor_env["created"].append(firm_id)
+    await _install_plugin(
+        sm, firm_id=firm_id, name="demo_plugin", version="0.2.3",
+    )
+
+    engine = _CtxCapturingEngine()
+    sentinel = object()  # standing in for a real GraphContext
+
+    async with sm() as session, firm_context(firm_id):
+        attached_firm = await session.merge(firm)
+        await execute_plugin(
+            DemoPlugin,
+            _run("demo_plugin", firm_id),
+            engine=engine,  # type: ignore[arg-type]
+            tool_registry=_registry(),
+            session=session,
+            firm=attached_firm,
+            anthropic=None,  # type: ignore[arg-type]
+            graph_ctx=sentinel,  # type: ignore[arg-type]
+        )
+
+    assert engine.captured_ctx is not None
+    assert engine.captured_ctx.graph_ctx is sentinel
+
+
+async def test_graph_ctx_defaults_to_none(executor_env) -> None:
+    """When the caller omits graph_ctx, ``ctx.graph_ctx`` is None."""
+    sm = executor_env["sm"]
+    firm_id, firm = await _seed_firm(sm)
+    executor_env["created"].append(firm_id)
+    await _install_plugin(
+        sm, firm_id=firm_id, name="demo_plugin", version="0.2.3",
+    )
+
+    engine = _CtxCapturingEngine()
+    async with sm() as session, firm_context(firm_id):
+        attached_firm = await session.merge(firm)
+        await execute_plugin(
+            DemoPlugin,
+            _run("demo_plugin", firm_id),
+            engine=engine,  # type: ignore[arg-type]
+            tool_registry=_registry(),
+            session=session,
+            firm=attached_firm,
+            anthropic=None,  # type: ignore[arg-type]
+        )
+
+    assert engine.captured_ctx is not None
+    assert engine.captured_ctx.graph_ctx is None

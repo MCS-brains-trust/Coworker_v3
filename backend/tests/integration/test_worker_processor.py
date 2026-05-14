@@ -422,9 +422,9 @@ async def test_graph_ctx_resolved_when_user_matches_resource(
     """Smoke test: a known azure_oid yields a User; processor walks
     past the resolve step without error.
 
-    The graph_ctx itself isn't passed to plugins in this commit
-    (Phase 6-8 will wire that); this test confirms the resolution
-    code path runs without crashing when User data is present.
+    The graph_ctx is now wired through execute_plugin (Phase 6-9),
+    but this test only sees the run result; the AgentContext-level
+    propagation is covered by ``test_plugin_executor`` tests.
     """
     sm = processor_env["sm"]
     firm_id = await _seed_firm(sm)
