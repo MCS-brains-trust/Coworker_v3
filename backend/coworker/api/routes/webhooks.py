@@ -19,30 +19,38 @@ Two responsibilities:
 Security
 --------
 
-For the thin-slice receiver we resolve firms via slug-in-URL. The
-``clientState`` carried in the notification body should match the
-stored per-subscription state — that lookup waits for the
-Phase 11 ``subscriptions`` table. Until then this endpoint
-**accepts any well-formed notification for a known firm**, which
-is fine while the URL is unpublished but is a security gap we
-must close before going public. Tracked as a phase 11 carry-
-forward.
+Every notification is validated against the persisted
+``graph_subscriptions`` row before enqueueing:
 
-Even without clientState validation, the endpoint refuses to
-enqueue for unknown firm slugs (returns 202 anyway so a probe
-can't enumerate firms).
+- Lookup the row by ``subscriptionId``. Unknown id → skip + log.
+- Verify ``row.firm_id`` matches the firm resolved from the URL
+  slug. Mismatch → skip + log (cross-firm replay defence).
+- Decrypt ``row.client_state_ciphertext`` and compare against the
+  notification's ``clientState`` (constant-time). Mismatch →
+  skip + log.
+
+Every per-notification rejection logs at WARNING and still
+returns 202 — Microsoft retries on non-202, and a flood of
+fabricated notifications shouldn't translate into a retry storm.
+
+For unknown firm slugs the endpoint returns 202 (no enqueue,
+no leak of which slugs exist).
 """
 import datetime as _dt
+import hmac
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import PlainTextResponse
 from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coworker.db import redis as redis_module
 from coworker.db.firms import lookup_firm_by_slug
-from coworker.db.session import get_session
+from coworker.db.models import GraphSubscription
+from coworker.db.session import firm_context, get_session
+from coworker.security.encryption import decrypt_str
 from coworker.workers.plugin_queue import PluginEventQueue
 
 router = APIRouter()
@@ -102,6 +110,9 @@ async def graph_webhook(
             "graph webhook unknown firm_slug={}", firm_slug,
         )
         return Response(status_code=202)
+    # Close the NO-FORCE-bracket transaction so the next reads
+    # below pick up the firm_context GUC via after_begin.
+    await session.commit()
 
     # Call through the module so test monkeypatching of get_redis
     # takes effect. ``from coworker.db.redis import get_redis``
@@ -109,28 +120,104 @@ async def graph_webhook(
     queue = PluginEventQueue(redis_module.get_redis())
 
     enqueued = 0
-    for notif in notifications:
-        if not isinstance(notif, dict):
-            continue
-        event_data = _build_event_data(notif)
-        if event_data is None:
-            continue
-        await queue.enqueue(
-            trigger="email_received",
-            firm_slug=firm_slug,
-            firm_id=firm.id,
-            event_data=event_data,
-        )
-        enqueued += 1
+    rejected = 0
+    async with firm_context(firm.id):
+        for notif in notifications:
+            if not isinstance(notif, dict):
+                continue
+            sub_id = notif.get("subscriptionId")
+            client_state = notif.get("clientState")
+            if not isinstance(sub_id, str) or not isinstance(client_state, str):
+                logger.warning(
+                    "graph webhook missing sub/clientState firm_slug={}",
+                    firm_slug,
+                )
+                rejected += 1
+                continue
+            if not await _validate_subscription(
+                session,
+                firm_id=firm.id,
+                subscription_id=sub_id,
+                client_state=client_state,
+                firm_slug=firm_slug,
+            ):
+                rejected += 1
+                continue
+            event_data = _build_event_data(notif)
+            if event_data is None:
+                continue
+            await queue.enqueue(
+                trigger="email_received",
+                firm_slug=firm_slug,
+                firm_id=firm.id,
+                event_data=event_data,
+            )
+            enqueued += 1
 
-    if enqueued:
+    if enqueued or rejected:
         logger.info(
-            "graph webhook enqueued count={} firm_slug={}",
-            enqueued,
-            firm_slug,
+            "graph webhook enqueued={} rejected={} firm_slug={}",
+            enqueued, rejected, firm_slug,
         )
 
     return Response(status_code=202)
+
+
+async def _validate_subscription(
+    session: AsyncSession,
+    *,
+    firm_id: Any,
+    subscription_id: str,
+    client_state: str,
+    firm_slug: str,
+) -> bool:
+    """Return True iff this notification matches a stored subscription.
+
+    Three checks (any failure -> False, log, drop):
+
+    1. A row exists for the given ``subscription_id``.
+    2. ``row.firm_id`` matches the firm resolved from the URL slug
+       — guards against an attacker who learned a real
+       subscription_id but tries to direct notifications at a
+       different firm's queue.
+    3. The decrypted ``client_state_ciphertext`` matches the
+       notification's ``clientState``, compared in constant time.
+    """
+    row = (
+        await session.execute(
+            select(GraphSubscription)
+            .where(GraphSubscription.subscription_id == subscription_id)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        logger.warning(
+            "graph webhook unknown subscription sub_id={} firm_slug={}",
+            subscription_id, firm_slug,
+        )
+        return False
+    if row.firm_id != firm_id:
+        logger.warning(
+            "graph webhook cross-firm subscription sub_id={} firm_slug={}",
+            subscription_id, firm_slug,
+        )
+        return False
+    try:
+        expected = decrypt_str(
+            row.client_state_ciphertext, firm_id=str(firm_id),
+        )
+    except Exception:
+        logger.exception(
+            "graph webhook decrypt client_state failed sub_id={}",
+            subscription_id,
+        )
+        return False
+    if not hmac.compare_digest(expected, client_state):
+        logger.warning(
+            "graph webhook bad clientState sub_id={} firm_slug={}",
+            subscription_id, firm_slug,
+        )
+        return False
+    return True
 
 
 def _build_event_data(notification: dict[str, Any]) -> dict[str, Any] | None:
