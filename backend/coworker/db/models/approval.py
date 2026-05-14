@@ -80,6 +80,18 @@ class ApprovalItem(Base):
     )
     decision_notes: Mapped[str | None] = mapped_column(Text)
 
+    # Most recent in-place edit (Phase 9-3). The status stays
+    # ``pending`` across edits; these columns track *who* and *when*
+    # only — full versioned history is deferred. NULL until the
+    # principal touches the payload.
+    last_edited_at: Mapped[_dt.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_edited_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+    )
+
     created_at: Mapped[_dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

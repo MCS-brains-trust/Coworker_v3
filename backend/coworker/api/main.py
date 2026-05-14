@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy import text
 
-from coworker.api.routes import auth, mail, webhooks
+from coworker.api.routes import approval, auth, mail, webhooks
 from coworker.config import get_settings
 from coworker.db.session import engine
 from coworker.logging import setup_logging
@@ -22,6 +22,7 @@ app = FastAPI(
     lifespan=lifespan,
     docs_url="/docs" if get_settings().ENVIRONMENT != "production" else None,
 )
+app.include_router(approval.router)
 app.include_router(auth.router)
 app.include_router(mail.router)
 app.include_router(webhooks.router)

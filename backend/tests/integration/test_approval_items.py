@@ -21,6 +21,7 @@ from coworker.approval.items import (
     CreateApprovalInput,
     approve,
     create_approval,
+    edit_payload,
     get_by_id,
     list_pending,
     reject,
@@ -277,3 +278,68 @@ async def test_check_constraint_rejects_unknown_status(approval_env) -> None:
         with pytest.raises(IntegrityError):
             await session.commit()
         await session.rollback()
+
+
+# ===========================================================================
+# Phase 9-3: in-place edit
+# ===========================================================================
+
+
+async def test_edit_payload_replaces_payload(approval_env) -> None:
+    sm = approval_env["sm"]
+    firm_id, user_id = await _seed_firm_user(sm)
+    approval_env["created"].append(firm_id)
+
+    async with sm() as session, firm_context(firm_id):
+        row = await create_approval(session, firm_id, input=_draft())
+        await session.commit()
+
+        edited = await edit_payload(
+            session, row.id,
+            new_payload={
+                "to": ["client@example.com"],
+                "subject": "Re: your query (edited)",
+                "body_html": "<p>Better wording.</p>",
+            },
+            edited_by_user_id=user_id,
+        )
+        await session.commit()
+
+    assert edited.status == "pending"
+    assert edited.payload["subject"] == "Re: your query (edited)"
+    assert edited.payload["body_html"] == "<p>Better wording.</p>"
+    assert edited.last_edited_at is not None
+    assert edited.last_edited_by_user_id == user_id
+
+
+async def test_edit_payload_after_approve_raises(approval_env) -> None:
+    sm = approval_env["sm"]
+    firm_id, user_id = await _seed_firm_user(sm)
+    approval_env["created"].append(firm_id)
+
+    async with sm() as session, firm_context(firm_id):
+        row = await create_approval(session, firm_id, input=_draft())
+        await session.commit()
+        await approve(session, row.id, decided_by_user_id=user_id)
+        await session.commit()
+
+        with pytest.raises(ApprovalTransitionError, match="pending"):
+            await edit_payload(
+                session, row.id,
+                new_payload={"anything": "else"},
+                edited_by_user_id=user_id,
+            )
+
+
+async def test_edit_payload_missing_id_raises(approval_env) -> None:
+    sm = approval_env["sm"]
+    firm_id, user_id = await _seed_firm_user(sm)
+    approval_env["created"].append(firm_id)
+
+    async with sm() as session, firm_context(firm_id):
+        with pytest.raises(LookupError):
+            await edit_payload(
+                session, uuid.uuid4(),
+                new_payload={"x": 1},
+                edited_by_user_id=user_id,
+            )

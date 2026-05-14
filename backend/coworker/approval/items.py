@@ -160,6 +160,51 @@ async def reject(
     )
 
 
+async def edit_payload(
+    session: AsyncSession,
+    item_id: uuid.UUID,
+    *,
+    new_payload: dict[str, Any],
+    edited_by_user_id: uuid.UUID,
+    now: _dt.datetime | None = None,
+) -> ApprovalItem:
+    """Replace a pending item's ``payload`` in place.
+
+    Used by the Phase 9-3 review UI: the principal tweaks an
+    email draft body (or any other category's payload) before
+    approving. The item stays ``pending`` across edits — only
+    approve / reject move it to a terminal state.
+
+    ``new_payload`` is a wholesale replacement, not a merge: the
+    client sends the full updated payload back. This avoids
+    accidentally dropping fields the backend introduces later
+    that the client doesn't know about (which would be a
+    JSON-patch nightmare).
+
+    Raises:
+        LookupError: the row doesn't exist (or RLS hides it).
+        ApprovalTransitionError: the row isn't pending — once
+            decided, edits aren't allowed; the principal must
+            create a new item (or, when in-place re-review lands,
+            transition back to pending explicitly).
+    """
+    row = await get_by_id(session, item_id)
+    if row is None:
+        raise LookupError(f"approval item {item_id} not found")
+    if row.status != "pending":
+        raise ApprovalTransitionError(
+            f"approval item {item_id} is {row.status!r}; only pending "
+            f"items can be edited"
+        )
+    now = now if now is not None else _dt.datetime.now(_dt.UTC)
+    row.payload = new_payload
+    row.last_edited_at = now
+    row.last_edited_by_user_id = edited_by_user_id
+    row.updated_at = now
+    await session.flush()
+    return row
+
+
 async def _decide(
     session: AsyncSession,
     item_id: uuid.UUID,
