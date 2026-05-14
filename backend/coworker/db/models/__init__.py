@@ -1,5 +1,6 @@
 from coworker.db.base import Base
 from coworker.db.models.audit import AuditLogEntry
+from coworker.db.models.graph_subscriptions import GraphSubscription
 from coworker.db.models.knowledge_graph import Entity, EntityRelationship
 from coworker.db.models.memory import ClientInteraction, Document, Lesson
 from coworker.db.models.orchestrator import AgentTrace, AgentTraceStep
@@ -19,6 +20,7 @@ __all__ = [
     "Entity",
     "EntityRelationship",
     "Firm",
+    "GraphSubscription",
     "Job",
     "Lesson",
     "PluginInstallation",
