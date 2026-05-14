@@ -1,4 +1,5 @@
 from coworker.db.base import Base
+from coworker.db.models.approval import ApprovalItem
 from coworker.db.models.audit import AuditLogEntry
 from coworker.db.models.graph_subscriptions import GraphSubscription
 from coworker.db.models.knowledge_graph import Entity, EntityRelationship
@@ -12,6 +13,7 @@ from coworker.db.models.work import Deadline, Job
 __all__ = [
     "AgentTrace",
     "AgentTraceStep",
+    "ApprovalItem",
     "AuditLogEntry",
     "Base",
     "ClientInteraction",
