@@ -21,13 +21,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coworker.connectors.exceptions import ConnectorError
 from coworker.db.firms import list_active_firm_ids
-from coworker.db.models import Firm, User
+from coworker.db.models import Firm, GraphSubscription, User
 from coworker.db.session import firm_context
 from coworker.graph.subscription_bootstrap import (
     INBOX_MESSAGES_RESOURCE_TEMPLATE,
     ensure_subscription,
 )
-from coworker.graph.subscriptions import AppGraphContext, graph_app_context
+from coworker.graph.subscriptions import (
+    AppGraphContext,
+    delete_subscription,
+    graph_app_context,
+)
 
 
 @dataclass
@@ -44,6 +48,7 @@ class SweepResult:
 
     firms_seen: int = 0
     users_seen: int = 0
+    orphans_deleted: int = 0
     actions: dict[str, int] = field(default_factory=dict)
     firm_errors: list[str] = field(default_factory=list)
     user_errors: list[str] = field(default_factory=list)
@@ -144,9 +149,21 @@ async def _sweep_firm(
             )
         ).scalars().all()
 
-        if not users:
+        # Phase 11-9: subscriptions whose user has been deactivated.
+        # We tell Microsoft to stop sending notifications and delete
+        # the local row so the platform converges on the desired state.
+        orphans = (
+            await session.execute(
+                select(GraphSubscription, User)
+                .join(User, User.id == GraphSubscription.user_id)
+                .where(GraphSubscription.firm_id == firm_id)
+                .where(User.is_active_processor.is_(False))
+            )
+        ).all()
+
+        if not users and not orphans:
             logger.debug(
-                "subscription sweep no active users firm_id={}", firm_id,
+                "subscription sweep nothing to do firm_id={}", firm_id,
             )
             return
 
@@ -175,6 +192,14 @@ async def _sweep_firm(
                 user=user,
                 notification_url=notification_url,
                 now=now,
+                result=result,
+            )
+
+        for row, _ in orphans:
+            await _delete_orphan_subscription(
+                session=session,
+                ctx=ctx,
+                row=row,
                 result=result,
             )
 
@@ -228,3 +253,38 @@ async def _sweep_user(
         user.id, outcome.action, outcome.row.subscription_id,
     )
     result.record_action(outcome.action)
+
+
+async def _delete_orphan_subscription(
+    *,
+    session: AsyncSession,
+    ctx: AppGraphContext,
+    row: GraphSubscription,
+    result: SweepResult,
+) -> None:
+    """Delete a Graph subscription whose user has been deactivated.
+
+    Two-step: tell Microsoft to stop, then drop the local row.
+    On a Graph-side transient (5xx / network) the local row
+    survives so the next tick can retry. On a 4xx / 404 we still
+    drop the row — either way the desired end state is reached.
+    """
+    try:
+        await delete_subscription(ctx, row.subscription_id)
+    except ConnectorError as exc:
+        logger.warning(
+            "subscription sweep orphan delete failed sub_id={} err={}",
+            row.subscription_id, exc,
+        )
+        result.user_errors.append(
+            f"orphan {row.subscription_id}: {type(exc).__name__}: {exc}"
+        )
+        return
+
+    await session.delete(row)
+    result.orphans_deleted += 1
+    result.record_action("orphan_deleted")
+    logger.info(
+        "subscription sweep orphan deleted sub_id={}",
+        row.subscription_id,
+    )

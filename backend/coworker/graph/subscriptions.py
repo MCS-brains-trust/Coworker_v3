@@ -403,6 +403,99 @@ async def renew_subscription(
     return subscription
 
 
+async def delete_subscription(
+    ctx: AppGraphContext, subscription_id: str,
+) -> bool:
+    """Delete a Graph change-notification subscription.
+
+    Used by the Phase 11-9 cleanup path when a user is deactivated:
+    we tell Microsoft to stop sending notifications, then the
+    caller removes the local row.
+
+    Returns:
+        True if Graph returned 204 (deleted). False if Graph
+        returned 404 (already gone — treated as success because
+        the desired end state is reached either way).
+
+    Raises:
+        ConnectorAuthError, ConnectorRateLimited, ConnectorTransient.
+        ValueError: empty ``subscription_id``.
+    """
+    if not subscription_id:
+        raise ValueError("subscription_id must be non-empty")
+
+    firm_id_str = str(ctx.firm.id)
+    action = "graph.subscriptions.delete"
+    extra: dict[str, Any] = {"subscription_id": subscription_id}
+
+    url = f"{_SUBSCRIPTIONS_ENDPOINT}/{quote(subscription_id, safe='')}"
+    rate_limiter = get_rate_limiter()
+    async with rate_limiter.slot(firm_id_str):
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                response = await http.delete(
+                    url,
+                    headers={"Authorization": f"Bearer {ctx.access_token}"},
+                )
+        except httpx.RequestError as exc:
+            await audit_failure(
+                ctx.session,
+                firm_id=firm_id_str,
+                user_id=SYSTEM_ACTOR,
+                action=action,
+                reason="network_error",
+                extra=extra,
+                actor_type="system",
+            )
+            raise ConnectorTransient(
+                "network error deleting subscription"
+            ) from exc
+
+    if response.status_code == 404:
+        # Already gone; the local row is stale. Record the no-op
+        # in audit so observability sees the deletion intent.
+        await append_audit(
+            ctx.session,
+            firm_id=firm_id_str,
+            actor_type="system",
+            actor_id=SYSTEM_ACTOR,
+            action=action,
+            payload={
+                "user_id": SYSTEM_ACTOR,
+                "subscription_id": subscription_id,
+                "outcome": "already_deleted",
+            },
+        )
+        await ctx.session.commit()
+        return False
+
+    await raise_for_graph_status(
+        response,
+        session=ctx.session,
+        firm_id=firm_id_str,
+        user_id=SYSTEM_ACTOR,
+        action=action,
+        allow_not_found=False,
+        extra=extra,
+        actor_type="system",
+    )
+
+    await append_audit(
+        ctx.session,
+        firm_id=firm_id_str,
+        actor_type="system",
+        actor_id=SYSTEM_ACTOR,
+        action=action,
+        payload={
+            "user_id": SYSTEM_ACTOR,
+            "subscription_id": subscription_id,
+            "outcome": "deleted",
+        },
+    )
+    await ctx.session.commit()
+    return True
+
+
 async def _post_graph_json(
     ctx: AppGraphContext,
     *,

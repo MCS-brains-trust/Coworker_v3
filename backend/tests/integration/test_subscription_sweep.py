@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from coworker.db.models import Firm, User
+from coworker.db.models import Firm, GraphSubscription, User
 from coworker.db.session import _attach_pool_listeners, firm_context
 from coworker.graph import subscriptions as subs_module
 from coworker.graph.subscription_bootstrap import DEFAULT_SUBSCRIPTION_TTL
@@ -348,3 +348,222 @@ async def test_sweep_empty_base_url_rejected(sweep_env) -> None:
             sessionmaker=sm,
             public_webhook_base_url="",
         )
+
+
+# ===========================================================================
+# Phase 11-9: orphan cleanup on user deactivation
+# ===========================================================================
+
+
+async def _seed_subscription_row(
+    sm, firm_id, user_id, *, subscription_id: str,
+) -> None:
+    """Insert a graph_subscriptions row directly (bypassing the sweep)."""
+    async with sm() as session, firm_context(firm_id):
+        session.add(
+            GraphSubscription(
+                firm_id=firm_id,
+                user_id=user_id,
+                subscription_id=subscription_id,
+                resource="users/x/mailFolders('Inbox')/messages",
+                notification_url=f"{_BASE}/webhooks/graph/test",
+                change_type="created,updated",
+                client_state_ciphertext=encrypt_str(
+                    "s", firm_id=str(firm_id),
+                ),
+                expiration_date_time=_dt.datetime.now(_dt.UTC)
+                + _dt.timedelta(days=2),
+            )
+        )
+        await session.commit()
+
+
+async def test_sweep_deletes_subscription_when_user_deactivated(
+    sweep_env,
+) -> None:
+    """A user flipped is_active_processor=False -> their sub is DELETEd
+    via Graph and the local row is removed."""
+    from sqlalchemy import select as _select
+    sm = sweep_env["sm"]
+    firm_id = await _seed_firm(sm)
+    sweep_env["created"].append(firm_id)
+    user_id = await _seed_user(
+        sm, firm_id, is_active_processor=False, azure_oid="oid-gone",
+    )
+    await _seed_subscription_row(
+        sm, firm_id, user_id, subscription_id="sub-orphan",
+    )
+
+    with respx.mock(assert_all_called=True) as rmock:
+        rmock.post(url__regex=_LOGIN_URL_RE).mock(
+            return_value=httpx.Response(200, json=_token_response()),
+        )
+        delete_route = rmock.delete(f"{_SUBS_URL}/sub-orphan").mock(
+            return_value=httpx.Response(204),
+        )
+
+        result = await sweep_subscriptions(
+            sessionmaker=sm,
+            public_webhook_base_url=_BASE,
+            firm_ids=[firm_id],
+        )
+
+    assert result.orphans_deleted == 1
+    assert result.actions.get("orphan_deleted") == 1
+    assert delete_route.called
+
+    async with sm() as session, firm_context(firm_id):
+        rows = (
+            await session.execute(
+                _select(GraphSubscription)
+                .where(GraphSubscription.firm_id == firm_id)
+            )
+        ).scalars().all()
+        assert rows == []
+
+
+async def test_sweep_orphan_delete_404_still_drops_local_row(
+    sweep_env,
+) -> None:
+    """If Graph 404s on the delete the row was already gone — we still
+    drop the local row so state converges."""
+    from sqlalchemy import select as _select
+    sm = sweep_env["sm"]
+    firm_id = await _seed_firm(sm)
+    sweep_env["created"].append(firm_id)
+    user_id = await _seed_user(
+        sm, firm_id, is_active_processor=False,
+    )
+    await _seed_subscription_row(
+        sm, firm_id, user_id, subscription_id="sub-already-gone",
+    )
+
+    with respx.mock(assert_all_called=True) as rmock:
+        rmock.post(url__regex=_LOGIN_URL_RE).mock(
+            return_value=httpx.Response(200, json=_token_response()),
+        )
+        rmock.delete(f"{_SUBS_URL}/sub-already-gone").mock(
+            return_value=httpx.Response(404, json={"error": "gone"}),
+        )
+
+        result = await sweep_subscriptions(
+            sessionmaker=sm,
+            public_webhook_base_url=_BASE,
+            firm_ids=[firm_id],
+        )
+
+    assert result.orphans_deleted == 1
+    async with sm() as session, firm_context(firm_id):
+        rows = (
+            await session.execute(
+                _select(GraphSubscription)
+                .where(GraphSubscription.firm_id == firm_id)
+            )
+        ).scalars().all()
+        assert rows == []
+
+
+async def test_sweep_orphan_delete_5xx_keeps_local_row(sweep_env) -> None:
+    """A transient Graph error during orphan delete leaves the row in
+    place for the next tick to retry."""
+    from sqlalchemy import select as _select
+    sm = sweep_env["sm"]
+    firm_id = await _seed_firm(sm)
+    sweep_env["created"].append(firm_id)
+    user_id = await _seed_user(
+        sm, firm_id, is_active_processor=False,
+    )
+    await _seed_subscription_row(
+        sm, firm_id, user_id, subscription_id="sub-flaky",
+    )
+
+    with respx.mock(assert_all_called=True) as rmock:
+        rmock.post(url__regex=_LOGIN_URL_RE).mock(
+            return_value=httpx.Response(200, json=_token_response()),
+        )
+        rmock.delete(f"{_SUBS_URL}/sub-flaky").mock(
+            return_value=httpx.Response(503, json={"error": "transient"}),
+        )
+
+        result = await sweep_subscriptions(
+            sessionmaker=sm,
+            public_webhook_base_url=_BASE,
+            firm_ids=[firm_id],
+        )
+
+    assert result.orphans_deleted == 0
+    assert any(
+        "orphan sub-flaky" in err for err in result.user_errors
+    )
+    async with sm() as session, firm_context(firm_id):
+        row = (
+            await session.execute(
+                _select(GraphSubscription)
+                .where(GraphSubscription.subscription_id == "sub-flaky")
+            )
+        ).scalar_one_or_none()
+        assert row is not None  # survives for retry
+
+
+async def test_sweep_mixed_active_and_inactive_users(sweep_env) -> None:
+    """Active user gets create/renew; inactive user with sub gets cleanup."""
+    from sqlalchemy import select as _select
+    sm = sweep_env["sm"]
+    firm_id = await _seed_firm(sm)
+    sweep_env["created"].append(firm_id)
+    active_uid = await _seed_user(
+        sm, firm_id, is_active_processor=True, azure_oid="oid-active",
+    )
+    inactive_uid = await _seed_user(
+        sm, firm_id, is_active_processor=False, azure_oid="oid-gone",
+    )
+    await _seed_subscription_row(
+        sm, firm_id, inactive_uid, subscription_id="sub-old",
+    )
+
+    now = _dt.datetime.now(_dt.UTC)
+    expiry = now + DEFAULT_SUBSCRIPTION_TTL
+
+    with respx.mock(assert_all_called=True) as rmock:
+        rmock.post(url__regex=_LOGIN_URL_RE).mock(
+            return_value=httpx.Response(200, json=_token_response()),
+        )
+        rmock.post(_SUBS_URL).mock(
+            return_value=httpx.Response(
+                201,
+                json=_subscription_response(
+                    sub_id="sub-new",
+                    resource=(
+                        "users/oid-active/mailFolders('Inbox')/messages"
+                    ),
+                    expiration=expiry,
+                ),
+            ),
+        )
+        rmock.delete(f"{_SUBS_URL}/sub-old").mock(
+            return_value=httpx.Response(204),
+        )
+
+        result = await sweep_subscriptions(
+            sessionmaker=sm,
+            public_webhook_base_url=_BASE,
+            firm_ids=[firm_id],
+            now=now,
+        )
+
+    assert result.users_seen == 1
+    assert result.orphans_deleted == 1
+    assert result.actions == {"created": 1, "orphan_deleted": 1}
+
+    # The active user's brand-new sub stays; the deactivated user's
+    # row is gone.
+    async with sm() as session, firm_context(firm_id):
+        rows = (
+            await session.execute(
+                _select(GraphSubscription)
+                .where(GraphSubscription.firm_id == firm_id)
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].subscription_id == "sub-new"
+    assert active_uid and inactive_uid  # silence linter
