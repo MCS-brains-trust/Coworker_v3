@@ -1,0 +1,15 @@
+[Unit]
+Description=Periodic Graph subscription sweep for CoWorker v3
+Requires=coworker-subscribe.service
+
+[Timer]
+# Run every 30 minutes — far shorter than DEFAULT_RENEWAL_BUFFER (12h)
+# so a failed sweep has many chances to recover before any
+# subscription actually expires.
+OnBootSec=2min
+OnUnitActiveSec=30min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

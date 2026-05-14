@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     # Webhook validation
     GRAPH_WEBHOOK_CLIENT_STATE: SecretStr = SecretStr("")  # HMAC key for Graph notifications
 
+    # Public origin Microsoft Graph posts change notifications to.
+    # The subscription scheduler appends ``/webhooks/graph/{firm_slug}``
+    # to this when creating subscriptions. Empty in dev/test until
+    # the deploy is reachable from the public internet.
+    PUBLIC_WEBHOOK_BASE_URL: str = ""
+
     # Backups
     SPACES_REGION: str = "syd1"
     SPACES_BUCKET: str = "coworker-v3-backups-syd1"

@@ -20,6 +20,8 @@ the still-open NO FORCE-bracket transaction would also work but
 defeats RLS for the duration of the transaction — preferring a
 commit-and-re-enter pattern keeps RLS enforcement narrow.
 """
+import uuid
+
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,5 +40,28 @@ async def lookup_firm_by_slug(session: AsyncSession, slug: str) -> Firm | None:
         return (
             await session.execute(select(Firm).where(Firm.slug == slug))
         ).scalar_one_or_none()
+    finally:
+        await session.execute(text("ALTER TABLE firms FORCE ROW LEVEL SECURITY"))
+
+
+async def list_active_firm_ids(session: AsyncSession) -> list[uuid.UUID]:
+    """Return active firms' ids for platform-level system sweeps.
+
+    Used by jobs that legitimately cross firm boundaries
+    (subscription renewal, token-usage rollups, …). Same NO FORCE
+    bracket as ``lookup_firm_by_slug`` — the SELECT crosses RLS
+    deliberately, the bracket is restored before the transaction
+    commits.
+
+    Returns just the ids (not full ORM objects) so the caller can
+    enter a fresh ``firm_context`` per firm without dragging an
+    ORM-attached row across that boundary.
+    """
+    await session.execute(text("ALTER TABLE firms NO FORCE ROW LEVEL SECURITY"))
+    try:
+        result = await session.execute(
+            select(Firm.id).where(Firm.is_active.is_(True))
+        )
+        return list(result.scalars().all())
     finally:
         await session.execute(text("ALTER TABLE firms FORCE ROW LEVEL SECURITY"))
