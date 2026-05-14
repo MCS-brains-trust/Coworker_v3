@@ -18,6 +18,7 @@ The BRPOP wrapper (``coworker.workers.loop.run_worker``) drives
 this — keeping the per-event logic isolated lets tests exercise
 it without a real worker process.
 """
+import datetime as _dt
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -28,8 +29,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coworker.connectors.anthropic_client import AnthropicClient
+from coworker.connectors.exceptions import (
+    ConnectorAuthError,
+    ConnectorTransient,
+)
 from coworker.db.models import Firm, User
 from coworker.db.session import firm_context
+from coworker.graph.auth import refresh_access_token
 from coworker.graph.context import GraphContext
 from coworker.orchestrator.engine import (
     ModelCaller,
@@ -46,6 +52,12 @@ from coworker.plugins.executor import (
 )
 from coworker.security.encryption import decrypt_str
 from coworker.workers.plugin_queue import PluginEvent
+
+# How close to expiry we proactively refresh. Microsoft tokens
+# usually live 1h; refreshing 5 minutes early absorbs clock skew
+# and the round-trip cost of the refresh call without burning many
+# tokens on too-eager rotation.
+_TOKEN_REFRESH_BUFFER = _dt.timedelta(minutes=5)
 
 if TYPE_CHECKING:
     from coworker.memory.embeddings import Embedder
@@ -267,15 +279,20 @@ async def _resolve_graph_ctx_for_email(
 
     Microsoft's notification resource path is
     ``users/{azure_object_id}/messages/{message_id}``. We extract
-    azure_object_id, look up the matching User, decrypt their
-    access token, and return a GraphContext. Returns None if any
-    step fails — the worker continues so the trace still records
-    what was attempted.
+    azure_object_id, look up the matching User, refresh the stored
+    access token if it's near expiry, and return a GraphContext.
+    Returns None if any step fails — the worker continues so the
+    trace still records what was attempted.
 
-    Token refresh: not done here. A stale token will surface as a
-    401 from the connector, which the engine records as a
-    tool_result with is_error. Proper proactive refresh waits for
-    Phase 11 (the renewal job will keep tokens fresh).
+    Token refresh: handled inline. If ``ms_token_expires_at`` is
+    None or within ``_TOKEN_REFRESH_BUFFER``, we exchange the
+    stored refresh_token for a fresh access_token via
+    ``refresh_access_token``. On ConnectorAuthError (Microsoft
+    rejected the refresh or the user has no refresh token) we
+    return None — the user needs to sign in again. On
+    ConnectorTransient (5xx / network) we fall back to the stored
+    token; subsequent Graph calls may 401, which the engine
+    records as a tool error rather than crashing the worker.
     """
     resource = event.event_data.get("resource")
     if not isinstance(resource, str) or not resource.startswith("users/"):
@@ -306,9 +323,63 @@ async def _resolve_graph_ctx_for_email(
         )
         return None
 
+    access_token = await _resolve_user_access_token(
+        session, firm=firm, user=user,
+    )
+    if access_token is None:
+        return None
+
+    return GraphContext(
+        firm=firm, user=user, access_token=access_token, session=session,
+    )
+
+
+async def _resolve_user_access_token(
+    session: AsyncSession,
+    *,
+    firm: Firm,
+    user: User,
+) -> str | None:
+    """Return a current access_token for ``user``, refreshing if near expiry.
+
+    Three outcomes:
+    - Stored token is fresh enough -> decrypt and return it.
+    - Stored token is near expiry / missing expiry -> refresh, persist,
+      return the new plaintext token.
+    - Refresh fails with ConnectorAuthError -> return None (user must
+      sign in again). ConnectorTransient -> log + fall back to the
+      stored token so a one-off Microsoft 5xx doesn't drop the event.
+    """
+    firm_id_str = str(firm.id)
+    now = _dt.datetime.now(_dt.UTC)
+    expires_at = user.ms_token_expires_at
+    needs_refresh = (
+        expires_at is None or expires_at <= now + _TOKEN_REFRESH_BUFFER
+    )
+
+    if needs_refresh:
+        try:
+            token = await refresh_access_token(session, user, firm)
+            await session.commit()
+            return token
+        except ConnectorAuthError:
+            logger.warning(
+                "worker token refresh rejected user_id={} — sign in again",
+                user.id,
+            )
+            return None
+        except ConnectorTransient:
+            logger.warning(
+                "worker token refresh transient error user_id={}; "
+                "falling back to stored token",
+                user.id,
+            )
+            # Fall through to the decrypt path.
+
+    assert user.ms_access_token_ciphertext is not None  # caller checked
     try:
-        access_token = decrypt_str(
-            user.ms_access_token_ciphertext, firm_id=str(firm.id)
+        return decrypt_str(
+            user.ms_access_token_ciphertext, firm_id=firm_id_str,
         )
     except Exception:
         logger.exception(
@@ -316,7 +387,3 @@ async def _resolve_graph_ctx_for_email(
             user.id,
         )
         return None
-
-    return GraphContext(
-        firm=firm, user=user, access_token=access_token, session=session,
-    )
