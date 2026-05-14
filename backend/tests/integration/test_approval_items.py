@@ -343,3 +343,131 @@ async def test_edit_payload_missing_id_raises(approval_env) -> None:
                 new_payload={"x": 1},
                 edited_by_user_id=user_id,
             )
+
+
+# ===========================================================================
+# Phase 9-6: two-person approval
+# ===========================================================================
+
+
+def _two_person_input(*, summary: str = "Engagement letter") -> CreateApprovalInput:
+    """An input whose category is in TWO_PERSON_REQUIRED_CATEGORIES."""
+    return CreateApprovalInput(
+        plugin_name="engagement_letter",
+        category="engagement_letter",
+        summary=summary,
+        payload={"client_name": "Acme Pty Ltd"},
+    )
+
+
+async def _seed_second_user(sm, firm_id) -> uuid.UUID:
+    """A second user in the same firm — for the cosigner."""
+    from coworker.db.models import User
+    async with sm() as session, firm_context(firm_id):
+        u = User(
+            firm_id=firm_id,
+            azure_object_id=f"oid-{uuid.uuid4().hex[:12]}",
+            upn=f"u2-{uuid.uuid4().hex[:8]}@example.com",
+            display_name="Cosigner",
+        )
+        session.add(u)
+        await session.commit()
+        return u.id
+
+
+async def test_two_person_category_requires_two_signatures(
+    approval_env,
+) -> None:
+    sm = approval_env["sm"]
+    firm_id, user_a = await _seed_firm_user(sm)
+    approval_env["created"].append(firm_id)
+    user_b = await _seed_second_user(sm, firm_id)
+
+    async with sm() as session, firm_context(firm_id):
+        row = await create_approval(
+            session, firm_id, input=_two_person_input(),
+        )
+        await session.commit()
+
+    assert row.required_approvals == 2
+
+    # First approver — signature recorded but still pending.
+    async with sm() as session, firm_context(firm_id):
+        after_first = await approve(
+            session, row.id, decided_by_user_id=user_a, notes="LGTM",
+        )
+        await session.commit()
+
+    assert after_first.status == "pending"
+    assert len(after_first.approval_signatures) == 1
+    assert after_first.approval_signatures[0]["user_id"] == str(user_a)
+
+    # Second approver (different user) — transitions to approved.
+    async with sm() as session, firm_context(firm_id):
+        after_second = await approve(
+            session, row.id, decided_by_user_id=user_b, notes="LGTM 2",
+        )
+        await session.commit()
+
+    assert after_second.status == "approved"
+    assert len(after_second.approval_signatures) == 2
+    assert after_second.decided_by_user_id == user_b
+
+
+async def test_two_person_same_user_cannot_sign_twice(approval_env) -> None:
+    sm = approval_env["sm"]
+    firm_id, user_a = await _seed_firm_user(sm)
+    approval_env["created"].append(firm_id)
+
+    async with sm() as session, firm_context(firm_id):
+        row = await create_approval(
+            session, firm_id, input=_two_person_input(),
+        )
+        await session.commit()
+        await approve(session, row.id, decided_by_user_id=user_a)
+        await session.commit()
+
+        with pytest.raises(ApprovalTransitionError, match="already signed"):
+            await approve(session, row.id, decided_by_user_id=user_a)
+
+
+async def test_single_person_category_records_signature(approval_env) -> None:
+    """Even the default single-person path keeps an audit signature."""
+    sm = approval_env["sm"]
+    firm_id, user_id = await _seed_firm_user(sm)
+    approval_env["created"].append(firm_id)
+
+    async with sm() as session, firm_context(firm_id):
+        row = await create_approval(session, firm_id, input=_draft())
+        await session.commit()
+        decided = await approve(
+            session, row.id, decided_by_user_id=user_id, notes="LGTM",
+        )
+        await session.commit()
+
+    assert decided.required_approvals == 1
+    assert decided.status == "approved"
+    assert len(decided.approval_signatures) == 1
+    assert decided.approval_signatures[0]["user_id"] == str(user_id)
+    assert decided.approval_signatures[0]["notes"] == "LGTM"
+
+
+async def test_two_person_reject_is_terminal_on_first_call(
+    approval_env,
+) -> None:
+    """Any one reviewer can veto — no second signature needed for reject."""
+    sm = approval_env["sm"]
+    firm_id, user_a = await _seed_firm_user(sm)
+    approval_env["created"].append(firm_id)
+
+    async with sm() as session, firm_context(firm_id):
+        row = await create_approval(
+            session, firm_id, input=_two_person_input(),
+        )
+        await session.commit()
+        rejected = await reject(
+            session, row.id, decided_by_user_id=user_a, notes="No.",
+        )
+        await session.commit()
+
+    assert rejected.status == "rejected"

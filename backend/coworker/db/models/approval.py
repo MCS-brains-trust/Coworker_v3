@@ -92,6 +92,19 @@ class ApprovalItem(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
     )
 
+    # Two-person approval (Phase 9-6). High-sensitivity categories
+    # (engagement_letter, formal_demand, fusesign_envelope_new_client,
+    # memory_purge) need ``required_approvals=2``; everything else
+    # defaults to 1.
+    required_approvals: Mapped[int] = mapped_column(
+        nullable=False, default=1, server_default="1",
+    )
+    # JSONB array of {user_id, signed_at, notes}. Each successful
+    # approve() appends one entry; the helper enforces no-double-sign.
+    approval_signatures: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]",
+    )
+
     created_at: Mapped[_dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -34,6 +34,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from coworker.config import get_settings
 from coworker.db.models import ApprovalItem
 
 
@@ -41,16 +42,24 @@ class ApprovalTransitionError(Exception):
     """Raised when a state transition isn't legal.
 
     Today: any attempt to approve/reject something that isn't
-    currently ``pending`` raises this. The application catches
-    and surfaces 409 Conflict to the principal; tests assert
-    on it directly.
+    currently ``pending`` raises this, plus a re-sign by the same
+    user on a two-person item. The application catches and
+    surfaces 409 Conflict to the principal; tests assert on it
+    directly.
     """
+
+
+def _required_approvals_for(category: str) -> int:
+    """How many distinct users must sign for a given category."""
+    if category in get_settings().TWO_PERSON_REQUIRED_CATEGORIES:
+        return 2
+    return 1
 
 
 @dataclass
 class CreateApprovalInput:
     """Inputs the caller controls; everything else is set by the
-    helper (id, status='pending', timestamps).
+    helper (id, status='pending', timestamps, required_approvals).
     """
 
     plugin_name: str
@@ -58,6 +67,9 @@ class CreateApprovalInput:
     summary: str
     payload: dict[str, Any]
     trace_id: uuid.UUID | None = None
+    # Override the category default. ``None`` (the usual case) lets
+    # the helper look up the firm-wide setting.
+    required_approvals: int | None = None
 
 
 async def create_approval(
@@ -69,8 +81,15 @@ async def create_approval(
     """Insert a new ``pending`` row. Caller commits.
 
     ``session`` must already be inside ``firm_context(firm_id)``;
-    RLS rejects the INSERT otherwise.
+    RLS rejects the INSERT otherwise. ``required_approvals`` is
+    set from the firm's ``TWO_PERSON_REQUIRED_CATEGORIES`` config
+    unless the caller overrides it explicitly.
     """
+    required = (
+        input.required_approvals
+        if input.required_approvals is not None
+        else _required_approvals_for(input.category)
+    )
     row = ApprovalItem(
         firm_id=firm_id,
         trace_id=input.trace_id,
@@ -79,6 +98,8 @@ async def create_approval(
         summary=input.summary,
         payload=input.payload,
         status="pending",
+        required_approvals=required,
+        approval_signatures=[],
     )
     session.add(row)
     await session.flush()
@@ -126,19 +147,53 @@ async def approve(
     notes: str | None = None,
     now: _dt.datetime | None = None,
 ) -> ApprovalItem:
-    """Transition ``pending`` -> ``approved``.
+    """Record an approval signature; transition when threshold met.
 
-    Raises ApprovalTransitionError if the row isn't pending,
-    LookupError if the row doesn't exist (or RLS hides it).
+    For ``required_approvals=1`` (the default) the first call
+    immediately moves the row to ``approved``. For two-person
+    categories the first call appends a signature but leaves the
+    row ``pending``; a second call by a DIFFERENT user finishes
+    the transition. Same user signing twice raises
+    ApprovalTransitionError — two-person approval requires two
+    distinct reviewers.
+
+    Raises:
+        ApprovalTransitionError: the row isn't pending, or the
+            same user is signing a second time.
+        LookupError: the row doesn't exist (or RLS hides it).
     """
-    return await _decide(
-        session,
-        item_id,
-        new_status="approved",
-        decided_by_user_id=decided_by_user_id,
-        notes=notes,
-        now=now,
-    )
+    row = await get_by_id(session, item_id)
+    if row is None:
+        raise LookupError(f"approval item {item_id} not found")
+    if row.status != "pending":
+        raise ApprovalTransitionError(
+            f"approval item {item_id} is {row.status!r}; cannot approve"
+        )
+    signatures = list(row.approval_signatures or [])
+    if any(
+        s.get("user_id") == str(decided_by_user_id) for s in signatures
+    ):
+        raise ApprovalTransitionError(
+            f"user {decided_by_user_id} already signed approval item "
+            f"{item_id}; two-person approval requires distinct users"
+        )
+
+    now = now if now is not None else _dt.datetime.now(_dt.UTC)
+    signatures.append({
+        "user_id": str(decided_by_user_id),
+        "signed_at": now.isoformat(),
+        "notes": notes,
+    })
+    row.approval_signatures = signatures
+    row.updated_at = now
+
+    if len(signatures) >= row.required_approvals:
+        row.status = "approved"
+        row.decided_at = now
+        row.decided_by_user_id = decided_by_user_id
+        row.decision_notes = notes
+    await session.flush()
+    return row
 
 
 async def reject(
@@ -149,15 +204,26 @@ async def reject(
     notes: str | None = None,
     now: _dt.datetime | None = None,
 ) -> ApprovalItem:
-    """Transition ``pending`` -> ``rejected``."""
-    return await _decide(
-        session,
-        item_id,
-        new_status="rejected",
-        decided_by_user_id=decided_by_user_id,
-        notes=notes,
-        now=now,
-    )
+    """Transition ``pending`` -> ``rejected``.
+
+    A single rejection is terminal regardless of how many
+    approvals were needed — any one reviewer can veto.
+    """
+    row = await get_by_id(session, item_id)
+    if row is None:
+        raise LookupError(f"approval item {item_id} not found")
+    if row.status != "pending":
+        raise ApprovalTransitionError(
+            f"approval item {item_id} is {row.status!r}; cannot reject"
+        )
+    now = now if now is not None else _dt.datetime.now(_dt.UTC)
+    row.status = "rejected"
+    row.decided_at = now
+    row.decided_by_user_id = decided_by_user_id
+    row.decision_notes = notes
+    row.updated_at = now
+    await session.flush()
+    return row
 
 
 async def edit_payload(
@@ -200,33 +266,6 @@ async def edit_payload(
     row.payload = new_payload
     row.last_edited_at = now
     row.last_edited_by_user_id = edited_by_user_id
-    row.updated_at = now
-    await session.flush()
-    return row
-
-
-async def _decide(
-    session: AsyncSession,
-    item_id: uuid.UUID,
-    *,
-    new_status: str,
-    decided_by_user_id: uuid.UUID,
-    notes: str | None,
-    now: _dt.datetime | None,
-) -> ApprovalItem:
-    row = await get_by_id(session, item_id)
-    if row is None:
-        raise LookupError(f"approval item {item_id} not found")
-    if row.status != "pending":
-        raise ApprovalTransitionError(
-            f"approval item {item_id} is {row.status!r}; cannot transition "
-            f"to {new_status!r}"
-        )
-    now = now if now is not None else _dt.datetime.now(_dt.UTC)
-    row.status = new_status
-    row.decided_at = now
-    row.decided_by_user_id = decided_by_user_id
-    row.decision_notes = notes
     row.updated_at = now
     await session.flush()
     return row
