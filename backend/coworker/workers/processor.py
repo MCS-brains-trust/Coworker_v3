@@ -84,7 +84,7 @@ async def process_event(
     sessionmaker: async_sessionmaker[AsyncSession],
     plugin_registry: PluginRegistry,
     tool_registry: ToolRegistry,
-    model_caller: ModelCaller,
+    model_caller: ModelCaller | None = None,
     embedder: "Embedder | None" = None,
     anthropic_factory: AnthropicFactory = _default_anthropic_factory,
 ) -> ProcessResult:
@@ -99,9 +99,11 @@ async def process_event(
             the event's trigger.
         tool_registry: the full builtin + plugin-contributed tool
             catalogue. Sliced per-plugin in execute_plugin.
-        model_caller: the engine's model caller — production is
-            ``AnthropicClient.complete_tool_use``, tests pass a
-            ScriptedModelCaller.
+        model_caller: optional override for the engine's model
+            caller. Tests pass a ScriptedModelCaller. When None
+            (production), the processor uses each firm's
+            ``AnthropicClient.complete_tool_use`` so PII scrubbing
+            and token metering are correctly scoped per firm.
         embedder: shared embedder for memory_query, etc. Optional.
         anthropic_factory: builds a per-firm AnthropicClient.
             Default uses the platform-shared key from Settings.
@@ -161,7 +163,7 @@ async def _run_one_plugin(
     event: PluginEvent,
     sessionmaker: async_sessionmaker[AsyncSession],
     tool_registry: ToolRegistry,
-    model_caller: ModelCaller,
+    model_caller: ModelCaller | None,
     embedder: "Embedder | None",
     anthropic_factory: AnthropicFactory,
     result: ProcessResult,
@@ -188,7 +190,18 @@ async def _run_one_plugin(
             )
 
         anthropic = anthropic_factory(firm)
-        engine = OrchestratorEngine(model_caller=model_caller)
+        # Default to the per-firm AnthropicClient's tool-use call so
+        # PII scrubbing + token metering are firm-scoped. Tests
+        # override this with a ScriptedModelCaller. The ignore is
+        # because complete_tool_use returns ToolUseResult, which is
+        # shape-compatible with ModelCallResult but not the same
+        # nominal type (documented as "drop-in" in its docstring).
+        caller: ModelCaller = (
+            model_caller
+            if model_caller is not None
+            else anthropic.complete_tool_use  # type: ignore[assignment]
+        )
+        engine = OrchestratorEngine(model_caller=caller)
 
         run = PluginRun(
             plugin_name=plugin_cls.name,

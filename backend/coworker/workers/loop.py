@@ -41,8 +41,8 @@ async def run_worker(
     sessionmaker: async_sessionmaker[AsyncSession],
     plugin_registry: PluginRegistry,
     tool_registry: ToolRegistry,
-    model_caller: ModelCaller,
     stop_event: asyncio.Event,
+    model_caller: ModelCaller | None = None,
     embedder: "Embedder | None" = None,
     anthropic_factory: AnthropicFactory = _default_anthropic_factory,
     idle_poll_seconds: int = 5,
@@ -55,8 +55,10 @@ async def run_worker(
             through to ``process_event``).
         plugin_registry: every known plugin.
         tool_registry: builtin + plugin-contributed tools.
-        model_caller: production ``AnthropicClient.complete_tool_use``;
-            scripted in tests.
+        model_caller: optional engine model caller. When omitted
+            (production), the processor uses each firm's
+            ``AnthropicClient.complete_tool_use``. Tests pass a
+            ScriptedModelCaller to bypass the real API.
         stop_event: when set, the loop drains its current event and
             exits cleanly. Bounded by ``idle_poll_seconds`` — the
             BRPOP timeout — so an idle worker still notices.
