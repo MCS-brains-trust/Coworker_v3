@@ -184,7 +184,10 @@ class EmailAttachment(BaseModel):
 
 
 async def list_inbox(
-    ctx: GraphContext, *, top: int = _DEFAULT_TOP
+    ctx: GraphContext,
+    *,
+    top: int = _DEFAULT_TOP,
+    since: _dt.datetime | None = None,
 ) -> list[InboxMessage]:
     """Return the signed-in user's most recent ``top`` inbox messages.
 
@@ -195,6 +198,10 @@ async def list_inbox(
             1000 for /me/messages; pagination beyond that is a
             separate concern landing later in Phase 3 alongside
             ``list_messages`` (delta queries).
+        since: optional tz-aware lower bound on ``receivedDateTime``.
+            Used by the Phase 11-7 backfill function to catch up
+            after a ``missed`` lifecycle event. Microsoft's
+            ``$filter`` accepts ``receivedDateTime gt {iso}``.
 
     Raises:
         ConnectorAuthError: 401 / 403 from Microsoft.
@@ -202,15 +209,28 @@ async def list_inbox(
             ``retry_after`` (seconds) when a numeric Retry-After
             header is present.
         ConnectorTransient: 5xx, timeout, or network error.
-        ValueError: ``top`` outside [1, 1000].
+        ValueError: ``top`` outside [1, 1000]; tz-naive ``since``.
     """
     if top < 1 or top > _MAX_TOP:
         raise ValueError(f"top must be between 1 and {_MAX_TOP}, got {top}")
+    if since is not None and since.tzinfo is None:
+        raise ValueError("since must be tz-aware")
 
     mailbox_id = str(ctx.user.id)
     firm_id_str = str(ctx.firm.id)
     user_id_str = str(ctx.user.id)
     action = "graph.mail.list_inbox"
+
+    params: dict[str, str | int] = {
+        "$top": top,
+        "$orderby": "receivedDateTime desc",
+        "$select": _SELECT_FIELDS,
+    }
+    if since is not None:
+        # Microsoft expects ISO-8601 with Z suffix and microseconds
+        # truncated to ms precision for $filter comparisons.
+        iso = since.astimezone(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        params["$filter"] = f"receivedDateTime gt {iso}"
 
     rate_limiter = get_rate_limiter()
     async with rate_limiter.slot(mailbox_id):
@@ -218,11 +238,7 @@ async def list_inbox(
             async with httpx.AsyncClient(timeout=30) as http:
                 response = await http.get(
                     _MESSAGES_ENDPOINT,
-                    params={
-                        "$top": top,
-                        "$orderby": "receivedDateTime desc",
-                        "$select": _SELECT_FIELDS,
-                    },
+                    params=params,
                     headers={"Authorization": f"Bearer {ctx.access_token}"},
                 )
         except httpx.RequestError as exc:

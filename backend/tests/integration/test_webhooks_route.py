@@ -531,8 +531,11 @@ def test_reauthorization_required_marks_row_for_renewal(webhook_env) -> None:
     assert delta < 5
 
 
-def test_missed_lifecycle_is_logged_without_action(webhook_env) -> None:
-    """A missed event is logged; the row is untouched (backfill in 11-7)."""
+def test_missed_lifecycle_marks_row_for_backfill(webhook_env) -> None:
+    """A missed event sets last_missed_at; the Phase 11-7 backfill
+    function reads that marker to decide what to reconcile."""
+    import datetime as _dt
+
     sm = webhook_env["sm"]
     slug = webhook_env["slug"]
     firm_id = webhook_env["firm_id"]
@@ -548,15 +551,20 @@ def test_missed_lifecycle_is_logged_without_action(webhook_env) -> None:
     assert resp.status_code == 202
     assert _queue_contents() == []
 
-    async def _row_still_exists() -> bool:
+    async def _marker() -> _dt.datetime | None:
         async with sm() as session, firm_context(firm_id):
             row = (
                 await session.execute(
-                    select(GraphSubscription).where(GraphSubscription.subscription_id == "sub-missed")
+                    select(GraphSubscription)
+                    .where(GraphSubscription.subscription_id == "sub-missed")
                 )
-            ).scalar_one_or_none()
-            return row is not None
-    assert asyncio.run(_row_still_exists())
+            ).scalar_one()
+            return row.last_missed_at
+
+    marker = asyncio.run(_marker())
+    assert marker is not None
+    delta = abs((_dt.datetime.now(_dt.UTC) - marker).total_seconds())
+    assert delta < 5
 
 
 def test_lifecycle_with_wrong_clientstate_is_rejected(webhook_env) -> None:

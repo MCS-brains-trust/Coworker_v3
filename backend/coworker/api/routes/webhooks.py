@@ -279,9 +279,13 @@ async def _handle_lifecycle_event(
     elif lifecycle_event == "missed":
         logger.warning(
             "graph webhook lifecycle missed sub_id={} firm_slug={} — "
-            "notifications were dropped; backfill pending (Phase 11-7)",
+            "marking for backfill",
             row.subscription_id, firm_slug,
         )
+        # Persist the missed marker; the Phase 11-7 backfill worker
+        # reconciles by listing messages received since the last
+        # known good window and re-enqueueing them.
+        row.last_missed_at = _dt.datetime.now(_dt.UTC)
     else:
         logger.warning(
             "graph webhook unknown lifecycle event={} sub_id={} firm_slug={}",

@@ -84,6 +84,12 @@ class GraphSubscription(Base):
     last_renewed_at: Mapped[_dt.datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    # When Microsoft most recently told us this subscription dropped
+    # notifications (lifecycleEvent="missed"). Cleared by the backfill
+    # function once it has re-enqueued the catch-up window.
+    last_missed_at: Mapped[_dt.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     __table_args__ = (
         UniqueConstraint(
