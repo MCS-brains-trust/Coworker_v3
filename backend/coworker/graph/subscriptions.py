@@ -246,6 +246,7 @@ async def subscribe_change_notifications(
     expiration_date_time: _dt.datetime,
     client_state: str,
     change_type: str = "created,updated",
+    lifecycle_notification_url: str | None = None,
 ) -> Subscription:
     """Create a Graph change-notification subscription.
 
@@ -265,6 +266,12 @@ async def subscribe_change_notifications(
             webhook receiver can validate the source. Not logged.
         change_type: comma-separated change types. Default
             ``"created,updated"``.
+        lifecycle_notification_url: optional separate endpoint for
+            ``subscriptionRemoved`` / ``reauthorizationRequired`` /
+            ``missed`` events. In production we point this at the
+            same webhook URL as ``notification_url`` so the handler
+            discriminates internally. When None, Microsoft sends
+            no lifecycle events.
 
     Returns:
         ``Subscription`` carrying ``id`` (used to renew/delete later)
@@ -295,13 +302,16 @@ async def subscribe_change_notifications(
         "notification_url": notification_url,
     }
 
-    payload = {
+    payload: dict[str, Any] = {
         "changeType": change_type,
         "notificationUrl": notification_url,
         "resource": resource,
         "expirationDateTime": _to_iso_z(expiration_date_time),
         "clientState": client_state,
     }
+    if lifecycle_notification_url:
+        payload["lifecycleNotificationUrl"] = lifecycle_notification_url
+        extra["lifecycle_notification_url"] = lifecycle_notification_url
 
     response = await _post_graph_json(
         ctx,

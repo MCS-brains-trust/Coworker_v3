@@ -187,6 +187,13 @@ async def test_creates_fresh_subscription_when_no_row(bootstrap_env) -> None:
     assert outcome.row.last_renewed_at is None
     assert route.called
 
+    # The POST body advertises both notification and lifecycle URLs
+    # at the same endpoint so the webhook handler can dispatch.
+    import json
+    sent = json.loads(route.calls.last.request.read().decode())
+    assert sent["notificationUrl"] == _NOTIFICATION_URL
+    assert sent["lifecycleNotificationUrl"] == _NOTIFICATION_URL
+
     # Persisted with encrypted client_state.
     async with sm() as session, firm_context(firm.id):
         row = (

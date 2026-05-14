@@ -121,6 +121,7 @@ async def graph_webhook(
 
     enqueued = 0
     rejected = 0
+    lifecycle_handled = 0
     async with firm_context(firm.id):
         for notif in notifications:
             if not isinstance(notif, dict):
@@ -134,15 +135,28 @@ async def graph_webhook(
                 )
                 rejected += 1
                 continue
-            if not await _validate_subscription(
+            row = await _validated_subscription_row(
                 session,
                 firm_id=firm.id,
                 subscription_id=sub_id,
                 client_state=client_state,
                 firm_slug=firm_slug,
-            ):
+            )
+            if row is None:
                 rejected += 1
                 continue
+
+            lifecycle_event = notif.get("lifecycleEvent")
+            if isinstance(lifecycle_event, str):
+                await _handle_lifecycle_event(
+                    session,
+                    row=row,
+                    lifecycle_event=lifecycle_event,
+                    firm_slug=firm_slug,
+                )
+                lifecycle_handled += 1
+                continue
+
             event_data = _build_event_data(notif)
             if event_data is None:
                 continue
@@ -153,27 +167,29 @@ async def graph_webhook(
                 event_data=event_data,
             )
             enqueued += 1
+        await session.commit()
 
-    if enqueued or rejected:
+    if enqueued or rejected or lifecycle_handled:
         logger.info(
-            "graph webhook enqueued={} rejected={} firm_slug={}",
-            enqueued, rejected, firm_slug,
+            "graph webhook enqueued={} rejected={} lifecycle={} firm_slug={}",
+            enqueued, rejected, lifecycle_handled, firm_slug,
         )
 
     return Response(status_code=202)
 
 
-async def _validate_subscription(
+async def _validated_subscription_row(
     session: AsyncSession,
     *,
     firm_id: Any,
     subscription_id: str,
     client_state: str,
     firm_slug: str,
-) -> bool:
-    """Return True iff this notification matches a stored subscription.
+) -> GraphSubscription | None:
+    """Return the stored ``GraphSubscription`` row iff the notification
+    is genuine; None otherwise.
 
-    Three checks (any failure -> False, log, drop):
+    Three checks (any failure -> None, log, drop):
 
     1. A row exists for the given ``subscription_id``.
     2. ``row.firm_id`` matches the firm resolved from the URL slug
@@ -194,13 +210,13 @@ async def _validate_subscription(
             "graph webhook unknown subscription sub_id={} firm_slug={}",
             subscription_id, firm_slug,
         )
-        return False
+        return None
     if row.firm_id != firm_id:
         logger.warning(
             "graph webhook cross-firm subscription sub_id={} firm_slug={}",
             subscription_id, firm_slug,
         )
-        return False
+        return None
     try:
         expected = decrypt_str(
             row.client_state_ciphertext, firm_id=str(firm_id),
@@ -210,14 +226,67 @@ async def _validate_subscription(
             "graph webhook decrypt client_state failed sub_id={}",
             subscription_id,
         )
-        return False
+        return None
     if not hmac.compare_digest(expected, client_state):
         logger.warning(
             "graph webhook bad clientState sub_id={} firm_slug={}",
             subscription_id, firm_slug,
         )
-        return False
-    return True
+        return None
+    return row
+
+
+async def _handle_lifecycle_event(
+    session: AsyncSession,
+    *,
+    row: GraphSubscription,
+    lifecycle_event: str,
+    firm_slug: str,
+) -> None:
+    """Dispatch a Microsoft Graph lifecycle event.
+
+    Three known events:
+
+    - ``subscriptionRemoved``: Microsoft has dropped the subscription
+      (admin revoked, the underlying resource was deleted, or it
+      expired beyond grace). We delete the row; the next sweep
+      tick creates a fresh subscription.
+    - ``reauthorizationRequired``: the user's token underpinning the
+      subscription needs refresh; the subscription survives only if
+      we reauth before its expiration. We reset
+      ``expiration_date_time`` to "near now" so the next sweep tick
+      treats it as renew-due and calls PATCH (which will reuse the
+      newly-refreshed token).
+    - ``missed``: Microsoft couldn't deliver some notifications. We
+      log; a Phase 11-7 backfill job will reconcile against
+      messages newer than ``last_renewed_at``.
+
+    Unknown lifecycle events are logged at WARNING and ignored.
+    """
+    if lifecycle_event == "subscriptionRemoved":
+        logger.warning(
+            "graph webhook lifecycle subscriptionRemoved sub_id={} firm_slug={}",
+            row.subscription_id, firm_slug,
+        )
+        await session.delete(row)
+    elif lifecycle_event == "reauthorizationRequired":
+        logger.info(
+            "graph webhook lifecycle reauthorizationRequired sub_id={} firm_slug={}",
+            row.subscription_id, firm_slug,
+        )
+        # Mark for renewal on the next sweep tick.
+        row.expiration_date_time = _dt.datetime.now(_dt.UTC)
+    elif lifecycle_event == "missed":
+        logger.warning(
+            "graph webhook lifecycle missed sub_id={} firm_slug={} — "
+            "notifications were dropped; backfill pending (Phase 11-7)",
+            row.subscription_id, firm_slug,
+        )
+    else:
+        logger.warning(
+            "graph webhook unknown lifecycle event={} sub_id={} firm_slug={}",
+            lifecycle_event, row.subscription_id, firm_slug,
+        )
 
 
 def _build_event_data(notification: dict[str, Any]) -> dict[str, Any] | None:

@@ -152,6 +152,10 @@ async def ensure_subscription(
         expiration_date_time=now + ttl,
         client_state=client_state,
         change_type=change_type,
+        # Lifecycle events (subscriptionRemoved /
+        # reauthorizationRequired / missed) come back to the same
+        # webhook URL; the handler discriminates internally.
+        lifecycle_notification_url=notification_url,
     )
     row = _row_from_subscription(
         firm=ctx.firm,

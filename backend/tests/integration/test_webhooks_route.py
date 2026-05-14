@@ -13,7 +13,7 @@ from urllib.parse import urlparse, urlunparse
 import pytest_asyncio
 from fastapi.testclient import TestClient
 from redis.asyncio import from_url
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -442,3 +442,148 @@ def test_valid_subscription_with_correct_clientstate_is_enqueued(
     events = _queue_contents()
     assert len(events) == 1
     assert events[0]["event_data"]["subscription_id"] == "sub-happy"
+
+
+# ===========================================================================
+# Phase 11-6: lifecycle events
+# ===========================================================================
+
+
+def _lifecycle_payload(
+    *,
+    sub_id: str,
+    client_state: str,
+    event: str,
+) -> dict:
+    """Microsoft's lifecycle notification shape — no resourceData."""
+    return {
+        "subscriptionId": sub_id,
+        "subscriptionExpirationDateTime": "2026-06-01T00:00:00.0000000Z",
+        "tenantId": "00000000-0000-0000-0000-000000000000",
+        "clientState": client_state,
+        "lifecycleEvent": event,
+    }
+
+
+def test_subscription_removed_deletes_row(webhook_env) -> None:
+    """A subscriptionRemoved event causes us to delete the row so the
+    next sweep tick creates a fresh subscription."""
+    sm = webhook_env["sm"]
+    slug = webhook_env["slug"]
+    firm_id = webhook_env["firm_id"]
+    asyncio.run(_seed_subscription(
+        sm, firm_id, subscription_id="sub-gone", client_state="s",
+    ))
+
+    body = {"value": [_lifecycle_payload(
+        sub_id="sub-gone", client_state="s",
+        event="subscriptionRemoved",
+    )]}
+    client = TestClient(app)
+    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    assert resp.status_code == 202
+    assert _queue_contents() == []
+
+    async def _check_deleted() -> bool:
+        async with sm() as session, firm_context(firm_id):
+            row = (
+                await session.execute(
+                    select(GraphSubscription).where(GraphSubscription.subscription_id == "sub-gone")
+                )
+            ).scalar_one_or_none()
+            return row is None
+    assert asyncio.run(_check_deleted())
+
+
+def test_reauthorization_required_marks_row_for_renewal(webhook_env) -> None:
+    """A reauthorizationRequired event resets expiration to now so the
+    next sweep tick treats the row as renew-due."""
+    sm = webhook_env["sm"]
+    slug = webhook_env["slug"]
+    firm_id = webhook_env["firm_id"]
+    asyncio.run(_seed_subscription(
+        sm, firm_id, subscription_id="sub-reauth", client_state="s",
+    ))
+
+    body = {"value": [_lifecycle_payload(
+        sub_id="sub-reauth", client_state="s",
+        event="reauthorizationRequired",
+    )]}
+    client = TestClient(app)
+    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    assert resp.status_code == 202
+    assert _queue_contents() == []
+
+    import datetime as _dt
+
+    async def _check_expiration() -> _dt.datetime:
+        async with sm() as session, firm_context(firm_id):
+            row = (
+                await session.execute(
+                    select(GraphSubscription).where(GraphSubscription.subscription_id == "sub-reauth")
+                )
+            ).scalar_one()
+            return row.expiration_date_time
+
+    new_expiry = asyncio.run(_check_expiration())
+    # Reset to "near now" — within 5 seconds of the actual handler tick.
+    delta = abs((_dt.datetime.now(_dt.UTC) - new_expiry).total_seconds())
+    assert delta < 5
+
+
+def test_missed_lifecycle_is_logged_without_action(webhook_env) -> None:
+    """A missed event is logged; the row is untouched (backfill in 11-7)."""
+    sm = webhook_env["sm"]
+    slug = webhook_env["slug"]
+    firm_id = webhook_env["firm_id"]
+    asyncio.run(_seed_subscription(
+        sm, firm_id, subscription_id="sub-missed", client_state="s",
+    ))
+
+    body = {"value": [_lifecycle_payload(
+        sub_id="sub-missed", client_state="s", event="missed",
+    )]}
+    client = TestClient(app)
+    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    assert resp.status_code == 202
+    assert _queue_contents() == []
+
+    async def _row_still_exists() -> bool:
+        async with sm() as session, firm_context(firm_id):
+            row = (
+                await session.execute(
+                    select(GraphSubscription).where(GraphSubscription.subscription_id == "sub-missed")
+                )
+            ).scalar_one_or_none()
+            return row is not None
+    assert asyncio.run(_row_still_exists())
+
+
+def test_lifecycle_with_wrong_clientstate_is_rejected(webhook_env) -> None:
+    """Lifecycle events go through the same clientState validation as
+    notifications — a forged subscriptionRemoved with wrong secret
+    does NOT delete the row."""
+    sm = webhook_env["sm"]
+    slug = webhook_env["slug"]
+    firm_id = webhook_env["firm_id"]
+    asyncio.run(_seed_subscription(
+        sm, firm_id, subscription_id="sub-x", client_state="real",
+    ))
+
+    body = {"value": [_lifecycle_payload(
+        sub_id="sub-x", client_state="forged",
+        event="subscriptionRemoved",
+    )]}
+    client = TestClient(app)
+    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    assert resp.status_code == 202
+
+    async def _row_survives() -> bool:
+        async with sm() as session, firm_context(firm_id):
+            row = (
+                await session.execute(
+                    select(GraphSubscription).where(GraphSubscription.subscription_id == "sub-x")
+                )
+            ).scalar_one_or_none()
+            return row is not None
+    assert asyncio.run(_row_survives())
