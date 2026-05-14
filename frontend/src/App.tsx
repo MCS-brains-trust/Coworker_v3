@@ -1,15 +1,21 @@
-import { Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 
 import { CurrentUserProvider } from "@/auth/CurrentUserProvider";
 import { RequireAuth } from "@/auth/RequireAuth";
+import { ApprovalQueuePage } from "@/pages/ApprovalQueuePage";
 import { HealthPage } from "@/pages/HealthPage";
 import { SignInPage } from "@/pages/SignInPage";
 
 /**
- * Top-level router. Phase 10-2 lands the OAuth sign-in flow:
- * unauthenticated visits redirect to /signin which redirects to
- * the backend's /auth/microsoft/start/{slug}. Phase 10-3 wires
- * the approval queue list at /approval.
+ * Top-level router.
+ *
+ * - ``/signin`` is the only un-authed route; everything else
+ *   sits behind ``RequireAuth``.
+ * - ``/`` redirects to ``/approval`` — the principal's daily
+ *   landing.
+ * - ``/health`` is kept for ops/debug sanity (Phase 10-1).
+ * - ``/approval`` lists pending items (Phase 10-3); the
+ *   detail page at ``/approval/:id`` lands in Phase 10-4.
  */
 export function App() {
   return (
@@ -18,6 +24,18 @@ export function App() {
         <Route path="/signin" element={<SignInPage />} />
         <Route
           path="/"
+          element={<Navigate to="/approval" replace />}
+        />
+        <Route
+          path="/approval"
+          element={
+            <RequireAuth>
+              <ApprovalQueuePage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/health"
           element={
             <RequireAuth>
               <HealthPage />
@@ -26,11 +44,7 @@ export function App() {
         />
         <Route
           path="*"
-          element={
-            <RequireAuth>
-              <HealthPage />
-            </RequireAuth>
-          }
+          element={<Navigate to="/approval" replace />}
         />
       </Routes>
     </CurrentUserProvider>
