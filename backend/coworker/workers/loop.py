@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from coworker.orchestrator.engine import ModelCaller
 from coworker.orchestrator.tools import ToolRegistry
 from coworker.plugins.base import PluginRegistry
+from coworker.workers.dedup import PluginRunDedup
 from coworker.workers.plugin_queue import PluginEventQueue
 from coworker.workers.processor import (
     AnthropicFactory,
@@ -45,6 +46,7 @@ async def run_worker(
     model_caller: ModelCaller | None = None,
     embedder: "Embedder | None" = None,
     anthropic_factory: AnthropicFactory = _default_anthropic_factory,
+    dedup: PluginRunDedup | None = None,
     idle_poll_seconds: int = 5,
 ) -> None:
     """Consume the plugin event queue until ``stop_event`` is set.
@@ -103,6 +105,7 @@ async def run_worker(
                 model_caller=model_caller,
                 embedder=embedder,
                 anthropic_factory=anthropic_factory,
+                dedup=dedup,
             )
         except Exception:
             logger.exception(

@@ -45,6 +45,7 @@ from coworker.plugins.executor import (
     PluginNotInstalledError,
     execute_plugin,
 )
+from coworker.workers.dedup import PluginRunDedup
 from coworker.workers.plugin_queue import PluginEvent
 
 if TYPE_CHECKING:
@@ -87,6 +88,7 @@ async def process_event(
     model_caller: ModelCaller | None = None,
     embedder: "Embedder | None" = None,
     anthropic_factory: AnthropicFactory = _default_anthropic_factory,
+    dedup: PluginRunDedup | None = None,
 ) -> ProcessResult:
     """Fan one event out to every plugin listening to its trigger.
 
@@ -152,6 +154,7 @@ async def process_event(
             model_caller=model_caller,
             embedder=embedder,
             anthropic_factory=anthropic_factory,
+            dedup=dedup,
             result=result,
         )
     return result
@@ -166,6 +169,7 @@ async def _run_one_plugin(
     model_caller: ModelCaller | None,
     embedder: "Embedder | None",
     anthropic_factory: AnthropicFactory,
+    dedup: PluginRunDedup | None,
     result: ProcessResult,
 ) -> None:
     """Execute a single plugin in its own session/transaction.
@@ -176,6 +180,16 @@ async def _run_one_plugin(
     and handed to ``execute_plugin`` so the plugin's email tools
     can read the triggering message.
     """
+    # Dedup: ask before opening the session. Saves DB work when
+    # a duplicate notification is in flight. The dedup_key is
+    # event+plugin specific so different plugins on the same
+    # event each get one shot.
+    if dedup is not None and not await dedup.claim(
+        event.firm_id, plugin_cls.name, event,
+    ):
+        result.skipped.append(f"{plugin_cls.name}: deduped")
+        return
+
     async with sessionmaker() as session, firm_context(event.firm_id):
         firm = (
             await session.execute(

@@ -31,6 +31,7 @@ from coworker.orchestrator.builtin_tools import register_builtin_tools
 from coworker.orchestrator.tools import ToolRegistry
 from coworker.plugins.base import PluginRegistry
 from coworker.plugins.builtin import register_builtin_plugins
+from coworker.workers.dedup import PluginRunDedup
 from coworker.workers.loop import run_worker
 from coworker.workers.plugin_queue import PluginEventQueue
 
@@ -77,6 +78,7 @@ async def _amain(*, concurrency: int, idle_poll_seconds: int) -> None:
 
     redis = redis_module.get_redis()
     queue = PluginEventQueue(redis)
+    dedup = PluginRunDedup(redis)
 
     stop_event = asyncio.Event()
     _install_signal_handlers(stop_event)
@@ -89,6 +91,7 @@ async def _amain(*, concurrency: int, idle_poll_seconds: int) -> None:
                 plugin_registry=plugin_registry,
                 tool_registry=tool_registry,
                 stop_event=stop_event,
+                dedup=dedup,
                 idle_poll_seconds=idle_poll_seconds,
             ),
             name=f"worker-{i}",
