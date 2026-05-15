@@ -24,6 +24,18 @@ class Firm(Base):
     shadow_mode: Mapped[bool] = mapped_column(Boolean, default=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # Sandbox mode (pre-pilot Task 1). Independent of shadow_mode.
+    # When True, connector-layer outbound writes (Graph drafts,
+    # FuseSign envelopes) reroute recipients to
+    # ``sandbox_outbound_catchall``; the rerouting fires even with
+    # shadow_mode=False so we can exercise the whole pipeline
+    # against synthetic data without touching real clients. DB-side
+    # CHECK constraint enforces catchall presence when sandbox=True.
+    is_sandbox: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+    sandbox_outbound_catchall: Mapped[str | None] = mapped_column(Text)
+
     # Per-firm Azure AD application
     azure_tenant_id: Mapped[str | None] = mapped_column(String(100))
     azure_client_id: Mapped[str | None] = mapped_column(String(100))

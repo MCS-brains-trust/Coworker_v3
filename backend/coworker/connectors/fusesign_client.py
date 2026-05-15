@@ -28,6 +28,7 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
+from loguru import logger
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -260,6 +261,14 @@ class FuseSignClient:
             actor_id=self._actor_id,
         )
 
+        # Sandbox rerouting (pre-pilot Task 1). Every signer email
+        # gets replaced with the firm's catchall; names are
+        # preserved so the principal can still see who the
+        # envelope was meant for. Fires even with shadow_mode=False.
+        recipients = _maybe_sandbox_reroute_recipients(
+            self._firm, recipients,
+        )
+
         payload = {
             "name": name,
             "recipients": [
@@ -319,6 +328,17 @@ class FuseSignClient:
             actor_type=self._actor_type,
             actor_id=self._actor_id,
         )
+
+        # Sandbox no-op (pre-pilot Task 1). The original envelope's
+        # signer is already the catchall; another reminder doesn't
+        # add signal. Quiet INFO log + no Graph call.
+        if self._firm.is_sandbox:
+            logger.info(
+                "sandbox fusesign send_reminder no-op firm_id={} "
+                "envelope_id={}",
+                self._firm.id, envelope_id,
+            )
+            return
 
         url = (
             f"{_API_BASE}/{_ENVELOPES_PATH}/"
@@ -666,3 +686,37 @@ def _parse_recipient(raw: dict[str, Any]) -> FuseSignRecipient:
         role=raw.get("role") or "",
         status=raw.get("status") or "",
     )
+
+
+def _maybe_sandbox_reroute_recipients(
+    firm: Firm,
+    recipients: list[CreateEnvelopeRecipient],
+) -> list[CreateEnvelopeRecipient]:
+    """Apply sandbox firm rerouting (pre-pilot Task 1).
+
+    Replaces every recipient's email with the firm's
+    ``sandbox_outbound_catchall``; preserves name + role so the
+    principal can still see who the envelope was intended for in
+    the principal-side audit trail. Non-sandbox firms get the
+    list back unchanged.
+
+    The migration's CHECK constraint guarantees the catchall is
+    set whenever is_sandbox=True; the assert is defence-in-depth.
+    """
+    if not firm.is_sandbox:
+        return recipients
+    assert firm.sandbox_outbound_catchall is not None, (
+        "sandbox firm has no catchall — CHECK constraint should "
+        "have prevented this; firm_id=" + str(firm.id)
+    )
+    catchall = firm.sandbox_outbound_catchall
+    logger.info(
+        "sandbox fusesign rewrite firm_id={} count={} catchall={!r}",
+        firm.id, len(recipients), catchall,
+    )
+    return [
+        CreateEnvelopeRecipient(
+            name=r.name, email=catchall, role=r.role,
+        )
+        for r in recipients
+    ]

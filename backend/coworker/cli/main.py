@@ -135,6 +135,74 @@ def bootstrap_firm(
     click.echo(str(firm_id))
 
 
+@cli.command("create-sandbox-firm")
+@click.option("--name", required=True, help="Display name for the firm.")
+@click.option("--slug", default=None, help="URL-safe identifier. Defaults to slugify(name).")
+@click.option("--catchall", required=True,
+              help="Email address that all outbound recipients are rewritten to. Required.")
+@click.option("--timezone", "timezone_", default="Australia/Melbourne", show_default=True,
+              help="IANA timezone name.")
+def create_sandbox_firm(
+    name: str, slug: str | None, catchall: str, timezone_: str,
+) -> None:
+    """Create a sandbox firm with outbound recipient rewriting.
+
+    All connector-level outbound writes (Graph drafts, FuseSign
+    envelopes) reroute their recipient addresses to ``--catchall``
+    even when shadow_mode=False. Use this to drive the whole
+    pipeline against synthetic data without touching real clients.
+
+    Per Phase 9-1 onwards, ``shadow_mode`` is left at its default
+    (True). Flip it off explicitly with a separate SQL UPDATE once
+    you're ready to exercise the dispatch sweep end-to-end.
+    """
+    import asyncio
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    from slugify import slugify
+
+    from coworker.db.models.tenancy import Firm
+    from coworker.db.session import SessionLocal, firm_context
+
+    # Cheap email-shape sanity. The real validation happens at the
+    # connector layer when an outbound actually fires; this is a
+    # smoke check so we don't insert obviously-bad rows.
+    if "@" not in catchall or catchall.count("@") != 1:
+        raise click.BadParameter(
+            f"Not a valid email: {catchall!r}.", param_hint="--catchall",
+        )
+    if catchall.startswith("@") or catchall.endswith("@"):
+        raise click.BadParameter(
+            f"Not a valid email: {catchall!r}.", param_hint="--catchall",
+        )
+
+    try:
+        ZoneInfo(timezone_)
+    except ZoneInfoNotFoundError as exc:
+        raise click.BadParameter(
+            f"Unknown IANA timezone: {timezone_!r}.", param_hint="--timezone",
+        ) from exc
+
+    resolved_slug = slug if slug is not None else slugify(name)
+    firm_id = uuid.uuid4()
+
+    async def _create() -> None:
+        async with SessionLocal() as session, firm_context(firm_id):
+            session.add(Firm(
+                id=firm_id, name=name, slug=resolved_slug,
+                timezone=timezone_,
+                is_sandbox=True,
+                sandbox_outbound_catchall=catchall,
+            ))
+            await session.commit()
+        click.echo(
+            f"Created sandbox firm {name!r} slug={resolved_slug} "
+            f"catchall={catchall} id={firm_id}"
+        )
+
+    asyncio.run(_create())
+
+
 @cli.command("tokens")
 @click.option(
     "--firm",

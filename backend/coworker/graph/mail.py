@@ -36,10 +36,12 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 from coworker.connectors.exceptions import ConnectorTransient
 from coworker.connectors.shadow_mode import guard_writable
+from coworker.db.models import Firm
 from coworker.graph.context import GraphContext
 from coworker.graph.errors import (
     audit_failure,
@@ -567,6 +569,14 @@ async def create_draft(
         actor_id=user_id_str,
     )
 
+    # Sandbox rerouting (pre-pilot Task 1). Fires even with
+    # shadow_mode=False — sandbox bypasses shadow but never
+    # reaches a real recipient. Logged at INFO so ops can see the
+    # rewrite in the trace.
+    to, cc, bcc, subject = _maybe_sandbox_reroute(
+        ctx.firm, to=to, cc=cc, bcc=bcc, subject=subject,
+    )
+
     draft_payload = _build_draft_payload(
         to=to,
         subject=subject,
@@ -769,6 +779,45 @@ async def mark_as_read(ctx: GraphContext, message_id: str) -> None:
         payload={"user_id": user_id_str, "message_id": message_id},
     )
     await ctx.session.commit()
+
+
+def _maybe_sandbox_reroute(
+    firm: Firm,
+    *,
+    to: list[str],
+    cc: list[str] | None,
+    bcc: list[str] | None,
+    subject: str,
+) -> tuple[list[str], list[str] | None, list[str] | None, str]:
+    """Apply sandbox firm rerouting (pre-pilot Task 1).
+
+    When ``firm.is_sandbox`` is True: replace every recipient
+    (to / cc / bcc) with the firm's ``sandbox_outbound_catchall``,
+    prefix the subject with ``[SANDBOX → orig_to]``, and log the
+    rewrite at INFO. cc/bcc are nulled out entirely so a sandbox
+    firm never leaks copies; the catchall sees one delivery.
+
+    A non-sandbox firm gets the args back unchanged.
+
+    The migration's CHECK constraint guarantees the catchall is
+    set whenever is_sandbox=True, so the ``assert`` here is
+    belt-and-braces against a hand-written INSERT bypassing the
+    constraint somehow.
+    """
+    if not firm.is_sandbox:
+        return to, cc, bcc, subject
+    assert firm.sandbox_outbound_catchall is not None, (
+        "sandbox firm has no catchall — CHECK constraint should "
+        "have prevented this; firm_id=" + str(firm.id)
+    )
+    original_to = ", ".join(to)
+    rewritten_subject = f"[SANDBOX → {original_to}] {subject}"
+    logger.info(
+        "sandbox rewrite firm_id={} original_to={!r} cc={!r} bcc={!r} "
+        "catchall={!r}",
+        firm.id, original_to, cc, bcc, firm.sandbox_outbound_catchall,
+    )
+    return [firm.sandbox_outbound_catchall], None, None, rewritten_subject
 
 
 def _build_draft_payload(
