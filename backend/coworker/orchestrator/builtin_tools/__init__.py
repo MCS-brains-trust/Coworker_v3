@@ -12,34 +12,44 @@ What's here vs deferred:
 - memory (memory_query) — wraps Phase 4C HybridRetriever
 - kg (kg_entity_lookup, kg_get_relationships) — pure DB
 - reasoning (get_today_date, get_firm_info) — trivial
+- email (email_get_message, email_create_draft,
+  email_propose_draft, email_mark_as_read)
+- calendar (calendar_list_events) — Phase 12-1
 
 Not yet wired (will arrive when Phase 6 needs them):
 
-- email_* (Graph mail read/draft/mark_read)
-- calendar_* (Graph calendar)
 - xpm_* (XPM client / job / invoice / note)
 - fusesign_* (envelope ops)
 - teams_* (webhook posts)
 - vision_* (Phase 7)
 - approval_* (Phase 9)
 """
-from coworker.orchestrator.builtin_tools import clock, email, firm, kg, memory
+from coworker.orchestrator.builtin_tools import (
+    calendar,
+    clock,
+    email,
+    firm,
+    kg,
+    memory,
+)
 from coworker.orchestrator.tools import ToolRegistry
 
 
 def register_builtin_tools(registry: ToolRegistry) -> None:
     """Populate ``registry`` with every builtin tool.
 
-    Read-only tools (memory, kg, firm info, clock) and the email
-    tools (one read + two shadow-guarded writes) all register
-    here. PluginExecutor handles dry-run + per-plugin category
-    filtering before passing the slice to the engine.
+    Read-only tools (memory, kg, firm info, clock, calendar) and
+    the email tools (one read + two shadow-guarded writes + one
+    approval-queue proposer) all register here. PluginExecutor
+    handles dry-run + per-plugin category filtering before passing
+    the slice to the engine.
     """
     memory.register(registry)
     kg.register(registry)
     firm.register(registry)
     clock.register(registry)
     email.register(registry)
+    calendar.register(registry)
 
 
 __all__ = ["register_builtin_tools"]
