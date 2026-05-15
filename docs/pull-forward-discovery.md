@@ -530,3 +530,22 @@ decisions below win.
   still produces no Outlook drafts (the shadow guard fires
   first). Documenting this so we don't trip over it later.
 
+---
+
+## 10. Carry-forwards accumulated during pre-pilot batch
+
+Items surfaced while landing the three tasks that aren't part
+of any one of them. Tracked here so they don't go missing
+between this batch and the next phase boundary.
+
+| # | Item | Source | Severity |
+|---|---|---|---|
+| pp-1 | `tenancy.py:Firm.settings` and `User.style_profile` use bare `dict` type-hints; mypy flags `Missing type arguments for generic type "dict"` at lines (post-Task-1) ~68 and ~105. | Pre-dates this batch; surfaced when running mypy on touched files in Task 1. | Low — typing accuracy only |
+| pp-2 | `cli/main.py:create_firm`: inner `async def _create()` has no return annotation; mypy flags `no-untyped-def` + `no-untyped-call`. Lines ~54 and ~61 post-Task-1. | Pre-dates this batch. | Low — typing accuracy only |
+| pp-3 | NDR Internet Message ID regeneration risk on OWA-side send (already documented in §9 decision 2). A future `/sentItems` polling sweep would close this; not in the current batch. | Surfaced in Task 3 discovery. | Medium — uncorrelated NDRs become silent false-positive "delivered" flips at the 4h sweep. |
+
+None block this batch. pp-1 and pp-2 should be swept in a
+typing-cleanup pass; pp-3 graduates to a real carry-forward
+once Task 3 lands and we see how many NDRs go uncorrelated in
+practice.
+

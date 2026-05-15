@@ -404,21 +404,48 @@ async def test_fusesign_create_envelope_sandbox_rewrites_emails(
 async def test_fusesign_send_reminder_sandbox_noop(sandbox_env) -> None:
     """Reminder is a no-op (no FuseSign HTTP call) when the firm is
     in sandbox mode — the original envelope's recipient is already
-    the catchall, so another reminder adds no signal."""
+    the catchall, so another reminder adds no signal.
+
+    Asserts BOTH branches of the no-op contract:
+      1. The FuseSign HTTP endpoint is not called (respx call_count).
+      2. The INFO log line fires so ops can see the rewrite in the
+         trace (loguru sink + grep).
+    """
+    from loguru import logger as _logger
+
     sm = sandbox_env["sm"]
     firm, _user = await _seed_firm_and_user(
         sm, is_sandbox=True, catchall="sink@coworker.test",
     )
     sandbox_env["created"].append(firm.id)
 
-    async with sm() as session, firm_context(firm.id):
-        attached_firm = await session.merge(firm)
-        client = FuseSignClient(
-            session=session, firm=attached_firm,
-            actor_type="user", actor_id=str(uuid.uuid4()),
-        )
-        with respx.mock(assert_all_called=False) as rmock:
-            # No mock registered — if the client tried the HTTP call
-            # respx would fail. The no-op path is the assertion.
-            await client.send_reminder("env-1")
-            assert rmock.calls.call_count == 0
+    # Loguru sink: capture formatted INFO lines. ``format="{message}"``
+    # so each entry is just the templated string; the sink callable
+    # receives a Message whose str() is the formatted line.
+    captured: list[str] = []
+    handler_id = _logger.add(
+        lambda msg: captured.append(str(msg)),
+        format="{message}", level="INFO",
+    )
+    try:
+        async with sm() as session, firm_context(firm.id):
+            attached_firm = await session.merge(firm)
+            client = FuseSignClient(
+                session=session, firm=attached_firm,
+                actor_type="user", actor_id=str(uuid.uuid4()),
+            )
+            with respx.mock(assert_all_called=False) as rmock:
+                # No mock registered — if the client tried the HTTP call
+                # respx would block it and raise.
+                await client.send_reminder("env-1")
+                assert rmock.calls.call_count == 0
+    finally:
+        _logger.remove(handler_id)
+
+    assert any(
+        "sandbox fusesign send_reminder no-op" in line
+        for line in captured
+    ), f"INFO log line missing; captured: {captured!r}"
+    assert any(
+        "env-1" in line for line in captured
+    ), "envelope id should appear in the no-op log line"
