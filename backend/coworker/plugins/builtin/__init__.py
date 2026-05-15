@@ -9,6 +9,8 @@ What's here vs deferred to later phases:
 
 - ``smart_responder`` (email_received): the canonical hot-path
   plugin. Ships in 6-3.
+- ``meeting_prep`` (scheduled + manual): daily pre-meeting
+  briefs. Ships in 12-2.
 
 Coming as separate sub-phases of Phase 6:
 
@@ -25,8 +27,6 @@ Coming as separate sub-phases of Phase 6:
 - fusesign_monitor (fusesign_event): track envelope state changes.
 - engagement_letter (manual + two-person approval): generates
   the firm's standard engagement letter.
-- meeting_prep (calendar-driven): prepares a brief 24h before
-  each calendar event.
 - client_outreach (scheduled): periodic touchpoint emails to
   clients who haven't been contacted recently.
 - annual_review (scheduled): client anniversary outreach.
@@ -37,15 +37,18 @@ Coming as separate sub-phases of Phase 6:
   with cross-client trends.
 """
 from coworker.plugins.base import PluginRegistry
+from coworker.plugins.builtin.meeting_prep import MeetingPrepPlugin
 from coworker.plugins.builtin.smart_responder import SmartResponderPlugin
 
 
 def register_builtin_plugins(registry: PluginRegistry) -> None:
     """Populate ``registry`` with every builtin plugin."""
     registry.register(SmartResponderPlugin)
+    registry.register(MeetingPrepPlugin)
 
 
 __all__ = [
+    "MeetingPrepPlugin",
     "SmartResponderPlugin",
     "register_builtin_plugins",
 ]

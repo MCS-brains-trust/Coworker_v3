@@ -24,7 +24,9 @@ from coworker.db.session import _attach_pool_listeners, firm_context
 from coworker.graph.context import GraphContext
 from coworker.orchestrator.builtin_tools.calendar import (
     CalendarListEventsInput,
+    MeetingBriefProposeInput,
     _calendar_list_events_handler,
+    _meeting_brief_propose_handler,
 )
 from coworker.orchestrator.context import AgentContext
 from coworker.orchestrator.tools import ToolError
@@ -51,7 +53,10 @@ async def cal_env(test_database_url):
 
 
 async def _cleanup_firm(sm, firm_id):
-    tables = ("firms", "users", "audit_log")
+    tables = (
+        "firms", "users", "audit_log", "approval_items",
+        "agent_traces", "agent_trace_steps",
+    )
     async with sm() as session:
         for t in tables:
             await session.execute(
@@ -60,14 +65,14 @@ async def _cleanup_firm(sm, firm_id):
         await session.commit()
     async with sm() as session:
         try:
-            await session.execute(
-                text("DELETE FROM audit_log WHERE firm_id = :id"),
-                {"id": str(firm_id)},
-            )
-            await session.execute(
-                text("DELETE FROM users WHERE firm_id = :id"),
-                {"id": str(firm_id)},
-            )
+            for t in (
+                "agent_trace_steps", "approval_items", "agent_traces",
+                "audit_log", "users",
+            ):
+                await session.execute(
+                    text(f"DELETE FROM {t} WHERE firm_id = :id"),
+                    {"id": str(firm_id)},
+                )
             await session.execute(
                 text("DELETE FROM firms WHERE id = :id"),
                 {"id": str(firm_id)},
@@ -243,3 +248,164 @@ def test_register_includes_calendar_list_events() -> None:
     assert tool is not None
     assert tool.category == "calendar"
     assert tool.side_effect is False
+
+
+# ===========================================================================
+# Phase 12-2: meeting_brief_propose
+# ===========================================================================
+
+
+async def _seed_trace(sm, firm_id: uuid.UUID) -> uuid.UUID:
+    from coworker.db.models import AgentTrace
+
+    trace_id = uuid.uuid4()
+    async with sm() as session, firm_context(firm_id):
+        session.add(
+            AgentTrace(
+                id=trace_id, firm_id=firm_id,
+                plugin_name="meeting_prep",
+                goal="brief", status="completed",
+                metadata_={},
+            )
+        )
+        await session.commit()
+    return trace_id
+
+
+async def test_meeting_brief_propose_writes_approval_item(cal_env) -> None:
+    from coworker.db.models import ApprovalItem
+
+    sm = cal_env["sm"]
+    firm_id, firm, user = await _seed_firm_and_user(sm)
+    cal_env["created"].append(firm_id)
+    trace_id = await _seed_trace(sm, firm_id)
+
+    async with sm() as session, firm_context(firm_id):
+        attached_firm = await session.merge(firm)
+        attached_user = await session.merge(user)
+        graph_ctx = GraphContext(
+            firm=attached_firm, user=attached_user,
+            access_token="bearer-test", session=session,
+        )
+        ctx = AgentContext(
+            firm=attached_firm, session=session,
+            anthropic=None,  # type: ignore[arg-type]
+            trace_id=trace_id,
+            graph_ctx=graph_ctx,
+            metadata={"plugin_name": "meeting_prep"},
+        )
+        result = await _meeting_brief_propose_handler(
+            MeetingBriefProposeInput(
+                event_id="ev-1",
+                subject="Quarterly review — Acme Pty Ltd",
+                start=_dt.datetime(2026, 5, 16, 10, 0, tzinfo=_dt.UTC),
+                end=_dt.datetime(2026, 5, 16, 11, 0, tzinfo=_dt.UTC),
+                brief_html="<p>Acme Q1 close, BAS due 28 May.</p>",
+                summary="Brief: Quarterly review with Acme",
+                attendees=["jane@acme.example", "bob@acme.example"],
+            ),
+            ctx,
+        )
+        await session.commit()
+
+    assert result["status"] == "pending"
+    item_id = uuid.UUID(result["approval_item_id"])
+
+    async with sm() as session, firm_context(firm_id):
+        row = (
+            await session.execute(
+                select(ApprovalItem).where(ApprovalItem.id == item_id)
+            )
+        ).scalar_one()
+        assert row.category == "meeting_brief"
+        assert row.plugin_name == "meeting_prep"
+        assert row.trace_id == trace_id
+        assert row.payload["event_id"] == "ev-1"
+        assert row.payload["subject"] == "Quarterly review — Acme Pty Ltd"
+        assert row.payload["owner_user_id"] == str(user.id)
+        assert row.payload["attendees"] == [
+            "jane@acme.example", "bob@acme.example",
+        ]
+
+
+async def test_meeting_brief_propose_high_confidence_auto_approves(
+    cal_env,
+) -> None:
+    """Confidence above the auto-approve threshold lands the brief as
+    ``approved`` so the principal sees it as already-seen."""
+    from coworker.db.models import ApprovalItem
+
+    sm = cal_env["sm"]
+    firm_id, firm, user = await _seed_firm_and_user(sm)
+    cal_env["created"].append(firm_id)
+    trace_id = await _seed_trace(sm, firm_id)
+
+    async with sm() as session, firm_context(firm_id):
+        attached_firm = await session.merge(firm)
+        attached_user = await session.merge(user)
+        graph_ctx = GraphContext(
+            firm=attached_firm, user=attached_user,
+            access_token="bearer-test", session=session,
+        )
+        ctx = AgentContext(
+            firm=attached_firm, session=session,
+            anthropic=None,  # type: ignore[arg-type]
+            trace_id=trace_id,
+            graph_ctx=graph_ctx,
+            metadata={"plugin_name": "meeting_prep"},
+        )
+        result = await _meeting_brief_propose_handler(
+            MeetingBriefProposeInput(
+                event_id="ev-2",
+                subject="Standup",
+                start=_dt.datetime(2026, 5, 16, 9, 0, tzinfo=_dt.UTC),
+                end=_dt.datetime(2026, 5, 16, 9, 30, tzinfo=_dt.UTC),
+                brief_html="<p>Internal — no client context needed.</p>",
+                summary="Brief: standup",
+                confidence=0.95,
+            ),
+            ctx,
+        )
+        await session.commit()
+
+    # Default firm threshold is 0.85; 0.95 auto-approves.
+    assert result["status"] == "approved"
+    item_id = uuid.UUID(result["approval_item_id"])
+
+    async with sm() as session, firm_context(firm_id):
+        row = (
+            await session.execute(
+                select(ApprovalItem).where(ApprovalItem.id == item_id)
+            )
+        ).scalar_one()
+        assert row.status == "approved"
+        assert row.confidence == 0.95
+
+
+async def test_meeting_brief_propose_without_graph_ctx_raises(
+    cal_env,
+) -> None:
+    sm = cal_env["sm"]
+    firm_id, firm, _ = await _seed_firm_and_user(sm)
+    cal_env["created"].append(firm_id)
+
+    async with sm() as session, firm_context(firm_id):
+        attached_firm = await session.merge(firm)
+        ctx = AgentContext(
+            firm=attached_firm, session=session,
+            anthropic=None,  # type: ignore[arg-type]
+            trace_id=uuid.uuid4(),
+            graph_ctx=None,
+        )
+        with pytest.raises(ToolError, match="Graph context"):
+            await _meeting_brief_propose_handler(
+                MeetingBriefProposeInput(
+                    event_id="ev",
+                    subject="x",
+                    start=_dt.datetime(2026, 5, 16, 9, 0, tzinfo=_dt.UTC),
+                    end=_dt.datetime(2026, 5, 16, 10, 0, tzinfo=_dt.UTC),
+                    brief_html="<p>x</p>",
+                    summary="x",
+                ),
+                ctx,
+            )
