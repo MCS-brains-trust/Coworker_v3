@@ -1,0 +1,32 @@
+[Unit]
+Description=MC & S CoWorker v3 scheduled-trigger sweep (one-shot)
+After=network.target postgresql.service redis-server.service coworker-api.service
+Requires=postgresql.service redis-server.service
+
+[Service]
+Type=oneshot
+User=coworker
+Group=coworker
+WorkingDirectory=/opt/coworker/current/backend
+LoadCredentialEncrypted=coworker.env:/opt/coworker/secrets/production.env.age
+ExecStartPre=/bin/sh -c 'age -d -i /etc/coworker/age.key -o /run/credentials/coworker-scheduler.service/coworker.env $CREDENTIALS_DIRECTORY/coworker.env'
+EnvironmentFile=/run/credentials/coworker-scheduler.service/coworker.env
+ExecStart=/opt/coworker/current/.venv/bin/python -m coworker.workers.scheduler
+
+# Hardening (matches sibling units)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/coworker /var/log/coworker
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

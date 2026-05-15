@@ -1,0 +1,17 @@
+[Unit]
+Description=Periodic scheduled-trigger sweep for CoWorker v3
+Requires=coworker-scheduler.service
+
+[Timer]
+# Run every 1 minute. Cron expressions on plugins have
+# minute-level precision; firing every minute means the
+# scheduler dispatches within ~60s of the cron tick. Catch-up
+# logic in sweep_scheduler still fires the most-recent missed
+# tick if the timer was paused.
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

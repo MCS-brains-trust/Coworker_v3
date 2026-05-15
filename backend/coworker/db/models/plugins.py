@@ -69,6 +69,13 @@ class PluginInstallation(Base):
     updated_at: Mapped[_dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # When this installation most recently fired a ``scheduled``
+    # event (Phase 12-3). NULL until the first fire. The Phase 12-3
+    # scheduler reads this to compute the next CronTrigger fire
+    # time and enqueues when it's elapsed.
+    last_fired_at: Mapped[_dt.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     __table_args__ = (
         UniqueConstraint(
