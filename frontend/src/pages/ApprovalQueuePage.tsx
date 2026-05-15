@@ -24,19 +24,19 @@ export function ApprovalQueuePage() {
     });
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-10 font-sans">
-      <header className="flex items-baseline justify-between">
+    <main className="mx-auto max-w-3xl px-4 py-6 font-sans sm:px-6 sm:py-10">
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-baseline sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
+          <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
             Pending review
           </h1>
           <p className="mt-1 text-sm text-neutral-500">
             Approvals waiting on your sign-off.
           </p>
         </div>
-        <div className="flex items-center gap-3 text-sm">
+        <div className="flex flex-wrap items-center gap-2 text-sm sm:gap-3">
           {me.status === "authenticated" && (
-            <span className="text-neutral-500">
+            <span className="truncate text-neutral-500">
               {me.user.display_name} · {me.user.firm_slug}
             </span>
           )}
@@ -44,14 +44,14 @@ export function ApprovalQueuePage() {
             type="button"
             onClick={() => refetch()}
             disabled={isFetching}
-            className="rounded-md border border-neutral-300 px-2 py-1 text-xs hover:bg-neutral-50 disabled:opacity-50"
+            className="ml-auto rounded-md border border-neutral-300 px-2 py-1 text-xs hover:bg-neutral-50 disabled:opacity-50 sm:ml-0"
           >
             {isFetching ? "refreshing…" : "refresh"}
           </button>
         </div>
       </header>
 
-      <section className="mt-8">
+      <section className="mt-6 sm:mt-8">
         {isPending && (
           <p className="text-sm text-neutral-500">loading…</p>
         )}
@@ -59,7 +59,7 @@ export function ApprovalQueuePage() {
           <p className="text-sm text-red-700">{error.message}</p>
         )}
         {data && data.length === 0 && (
-          <div className="rounded-lg border border-dashed border-neutral-300 p-10 text-center text-sm text-neutral-500">
+          <div className="rounded-lg border border-dashed border-neutral-300 p-8 text-center text-sm text-neutral-500 sm:p-10">
             Inbox zero — nothing pending right now.
           </div>
         )}

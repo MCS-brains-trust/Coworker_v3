@@ -119,7 +119,7 @@ export function ApprovalDetailPage() {
 
 function PageShell({ children }: { children: React.ReactNode }) {
   return (
-    <main className="mx-auto max-w-3xl space-y-6 px-6 py-10 font-sans">
+    <main className="mx-auto max-w-3xl space-y-5 px-4 py-6 font-sans sm:space-y-6 sm:px-6 sm:py-10">
       {children}
     </main>
   );
@@ -218,12 +218,12 @@ function EmailDraftEditor({
     <section className="space-y-3 rounded-lg border border-neutral-200 bg-white p-4">
       <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-sm">
         <dt className="text-neutral-500">To</dt>
-        <dd className="font-mono">{to}</dd>
+        <dd className="break-all font-mono">{to}</dd>
         <dt className="text-neutral-500">Subject</dt>
-        <dd>{subject}</dd>
+        <dd className="break-words">{subject}</dd>
       </dl>
       <div>
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-medium text-neutral-700">Body</h3>
           <div className="flex items-center gap-3">
             <BodyViewToggle view={view} onChange={setView} />
@@ -407,7 +407,7 @@ function DecideButtons({
           className="mt-1 block w-full rounded-md border border-neutral-300 p-2 text-sm"
         />
       </label>
-      <div className="mt-3 flex items-center gap-2">
+      <div className="mt-3 flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
         <button
           type="button"
           disabled={loading}
