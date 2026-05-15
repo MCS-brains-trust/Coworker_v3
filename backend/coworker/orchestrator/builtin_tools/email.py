@@ -35,6 +35,7 @@ from coworker.orchestrator.tools import (
     ToolError,
     ToolRegistry,
 )
+from coworker.security.sanitise import sanitise_and_wrap
 
 
 def _require_graph_ctx(ctx: AgentContext, tool_name: str) -> GraphContext:
@@ -67,28 +68,48 @@ class EmailGetMessageInput(BaseModel):
 async def _email_get_message_handler(
     inp: EmailGetMessageInput, ctx: AgentContext
 ) -> dict[str, Any]:
+    """Fetch one message; sanitise + wrap free-text fields.
+
+    Sanitised fields (these come from an attacker-controlled
+    inbound email and feed back into Claude via tool_result):
+      - subject
+      - sender.name + each recipient.name
+      - body.content (the full body; max_length 8000 to capture
+        a substantive reply without dominating the context)
+
+    Untouched (structured / identifier / boolean):
+      - id, conversation_id (Graph-generated UUIDs)
+      - sender.email + recipient.email (caller validates)
+      - received_at (datetime)
+      - is_read, has_attachments (booleans)
+      - body.content_type (enum: html / text)
+    """
     graph_ctx = _require_graph_ctx(ctx, "email_get_message")
     message = await get_message(graph_ctx, inp.message_id)
+
+    wrapped_subject, _ = sanitise_and_wrap(message.subject, max_length=500)
+    wrapped_body, _ = sanitise_and_wrap(
+        message.body.content, max_length=8000,
+    )
+
+    def _addr(a: Any) -> dict[str, Any]:
+        wrapped_name, _ = (
+            sanitise_and_wrap(a.name, max_length=200)
+            if a.name is not None
+            else (None, [])
+        )
+        return {"email": a.email, "name": wrapped_name}
+
     return {
         "id": message.id,
-        "subject": message.subject,
-        "sender": (
-            {"email": message.sender.email, "name": message.sender.name}
-            if message.sender
-            else None
-        ),
-        "to_recipients": [
-            {"email": r.email, "name": r.name}
-            for r in message.to_recipients
-        ],
-        "cc_recipients": [
-            {"email": r.email, "name": r.name}
-            for r in message.cc_recipients
-        ],
+        "subject": wrapped_subject,
+        "sender": _addr(message.sender) if message.sender else None,
+        "to_recipients": [_addr(r) for r in message.to_recipients],
+        "cc_recipients": [_addr(r) for r in message.cc_recipients],
         "received_at": message.received_at.isoformat(),
         "body": {
             "content_type": message.body.content_type,
-            "content": message.body.content,
+            "content": wrapped_body,
         },
         "is_read": message.is_read,
         "has_attachments": message.has_attachments,

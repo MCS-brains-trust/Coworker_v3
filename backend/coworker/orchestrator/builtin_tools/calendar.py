@@ -29,6 +29,7 @@ from coworker.orchestrator.tools import (
     ToolError,
     ToolRegistry,
 )
+from coworker.security.sanitise import sanitise_and_wrap
 
 _DEFAULT_TOP = 50
 _MAX_TOP = 1000
@@ -70,43 +71,71 @@ class CalendarListEventsInput(BaseModel):
 async def _calendar_list_events_handler(
     inp: CalendarListEventsInput, ctx: AgentContext
 ) -> dict[str, Any]:
+    """List calendar events; sanitise + wrap external-text fields.
+
+    Sanitised (event organiser / attendees may be external to
+    the firm; subject / preview / location come from whoever
+    created the meeting):
+      - subject, preview, location
+      - organizer.name, each attendee.name
+
+    Untouched (identifiers, datetimes, enums, URLs validated by
+    Graph):
+      - id, start, end (datetimes)
+      - is_all_day, is_cancelled (booleans)
+      - show_as, attendee_type, response_status (enums)
+      - organizer.email, attendee.email (caller validates)
+      - online_meeting_url, web_link (Graph-emitted URLs)
+    """
     graph_ctx = _require_graph_ctx(ctx, "calendar_list_events")
     events = await list_calendar_events(
         graph_ctx, start=inp.start, end=inp.end, top=inp.top,
     )
-    return {
-        "count": len(events),
-        "events": [
-            {
-                "id": e.id,
-                "subject": e.subject,
-                "preview": e.preview,
-                "start": e.start.isoformat(),
-                "end": e.end.isoformat(),
-                "location": e.location,
-                "is_all_day": e.is_all_day,
-                "is_cancelled": e.is_cancelled,
-                "show_as": e.show_as,
-                "organizer": (
-                    {"email": e.organizer.email, "name": e.organizer.name}
-                    if e.organizer
-                    else None
-                ),
-                "attendees": [
-                    {
-                        "email": a.email,
-                        "name": a.name,
-                        "attendee_type": a.attendee_type,
-                        "response_status": a.response_status,
-                    }
-                    for a in e.attendees
-                ],
-                "online_meeting_url": e.online_meeting_url,
-                "web_link": e.web_link,
-            }
-            for e in events
-        ],
-    }
+
+    def _wrap_name(name: str | None) -> str | None:
+        if name is None:
+            return None
+        wrapped, _ = sanitise_and_wrap(name, max_length=200)
+        return wrapped
+
+    out_events: list[dict[str, Any]] = []
+    for e in events:
+        wrapped_subject, _ = sanitise_and_wrap(e.subject, max_length=500)
+        wrapped_preview, _ = sanitise_and_wrap(e.preview, max_length=2000)
+        wrapped_location = (
+            _wrap_name(e.location) if e.location else None
+        )
+        out_events.append({
+            "id": e.id,
+            "subject": wrapped_subject,
+            "preview": wrapped_preview,
+            "start": e.start.isoformat(),
+            "end": e.end.isoformat(),
+            "location": wrapped_location,
+            "is_all_day": e.is_all_day,
+            "is_cancelled": e.is_cancelled,
+            "show_as": e.show_as,
+            "organizer": (
+                {
+                    "email": e.organizer.email,
+                    "name": _wrap_name(e.organizer.name),
+                }
+                if e.organizer
+                else None
+            ),
+            "attendees": [
+                {
+                    "email": a.email,
+                    "name": _wrap_name(a.name),
+                    "attendee_type": a.attendee_type,
+                    "response_status": a.response_status,
+                }
+                for a in e.attendees
+            ],
+            "online_meeting_url": e.online_meeting_url,
+            "web_link": e.web_link,
+        })
+    return {"count": len(out_events), "events": out_events}
 
 
 class MeetingBriefProposeInput(BaseModel):

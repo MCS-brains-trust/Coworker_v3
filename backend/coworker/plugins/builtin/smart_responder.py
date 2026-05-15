@@ -41,6 +41,7 @@ Config (``SmartResponderConfig``):
 from pydantic import BaseModel, Field
 
 from coworker.plugins.base import OrchestratorPlugin, PluginRun
+from coworker.security.sanitise import sanitise_and_wrap
 
 _DEFAULT_BUDGET_CENTS = 20  # $0.20 per run
 
@@ -95,19 +96,61 @@ class SmartResponderPlugin(OrchestratorPlugin):
 
     @classmethod
     def goal(cls, run: PluginRun) -> str:
-        event = run.event_data
-        message_id = event.get("message_id", "<unknown>")
-        from_address = event.get("from", "<unknown>")
-        subject = event.get("subject", "<unknown>")
-        snippet = (event.get("body_preview") or "").strip()
-        snippet_block = f"\n\nPreview:\n{snippet}" if snippet else ""
+        goal_text, _warnings = cls._compose_goal(run)
+        return goal_text
 
-        return (
+    @classmethod
+    def compose_goal_with_warnings(
+        cls, run: PluginRun,
+    ) -> tuple[str, list[str]]:
+        """Build the goal text and surface sanitiser warnings.
+
+        Identical to ``goal(run)`` but also returns the list of
+        warning labels accumulated while sanitising the four
+        attacker-controlled event fields (``from``, ``subject``,
+        ``body_preview``; ``message_id`` is Graph-generated and
+        not sanitised). The executor stamps the returned
+        warnings onto the agent_trace's metadata so the trace
+        view shows what tripped during goal assembly.
+        """
+        return cls._compose_goal(run)
+
+    @classmethod
+    def _compose_goal(
+        cls, run: PluginRun,
+    ) -> tuple[str, list[str]]:
+        event = run.event_data
+        # Graph-generated UUID-shaped string; not attacker-controlled.
+        message_id = event.get("message_id", "<unknown>")
+
+        # Three attacker-controllable fields: sanitise + wrap. The
+        # engine's universal rule teaches Claude that <user_data>
+        # contents are data, not instructions.
+        from_value = event.get("from") or "<unknown>"
+        subject_value = event.get("subject") or "<unknown>"
+        snippet_value = (event.get("body_preview") or "").strip()
+
+        wrapped_from, w1 = sanitise_and_wrap(from_value, max_length=200)
+        wrapped_subject, w2 = sanitise_and_wrap(subject_value, max_length=500)
+
+        warnings: list[str] = []
+        warnings.extend(f"from:{w}" for w in w1)
+        warnings.extend(f"subject:{w}" for w in w2)
+
+        snippet_block = ""
+        if snippet_value:
+            wrapped_snippet, w3 = sanitise_and_wrap(
+                snippet_value, max_length=2000,
+            )
+            warnings.extend(f"body_preview:{w}" for w in w3)
+            snippet_block = f"\n\nPreview:\n{wrapped_snippet}"
+
+        goal = (
             "An email has arrived in the monitored mailbox and needs a "
             "drafted reply.\n\n"
             f"- Message ID: {message_id}\n"
-            f"- From: {from_address}\n"
-            f"- Subject: {subject}"
+            f"- From: {wrapped_from}\n"
+            f"- Subject: {wrapped_subject}"
             f"{snippet_block}\n\n"
             "Steps to follow:\n\n"
             "1. If the preview is enough to draft a reply, you may "
@@ -136,6 +179,7 @@ class SmartResponderPlugin(OrchestratorPlugin):
             "and the Phase 9-4 dispatch sweep creates the real "
             "Outlook draft once approved."
         )
+        return goal, warnings
 
     @classmethod
     def system_prompt(cls, run: PluginRun) -> str | None:

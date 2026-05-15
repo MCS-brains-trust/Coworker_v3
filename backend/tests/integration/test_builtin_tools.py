@@ -161,7 +161,10 @@ async def test_get_firm_info_returns_firm_attributes(tools_env) -> None:
         ctx = _make_ctx(session, attached)
         result = await handler(input_cls(), ctx)
 
-    assert result["name"] == "Tools Firm"
+    # Pre-pilot Task 2: name is sanitised + wrapped (principal-typed,
+    # but cheap defence in depth). slug, timezone, abn, shadow_mode
+    # are structured and pass through untouched.
+    assert result["name"] == "<user_data>Tools Firm</user_data>"
     assert result["slug"].startswith("t-")
     assert result["timezone"] == "Australia/Sydney"
 
@@ -322,7 +325,11 @@ async def test_kg_entity_lookup_returns_top_candidates(tools_env) -> None:
         result = await handler(input_cls(name="Acme Pty Ltd"), ctx)
 
     assert len(result["candidates"]) >= 1
-    assert result["candidates"][0]["name"] == "Acme Pty Ltd"
+    # Pre-pilot Task 2: entity names are sanitised + wrapped. The
+    # entity_id (UUID) and similarity (float) pass through.
+    assert result["candidates"][0]["name"] == (
+        "<user_data>Acme Pty Ltd</user_data>"
+    )
     assert 0.0 <= result["candidates"][0]["similarity"] <= 1.0
 
 

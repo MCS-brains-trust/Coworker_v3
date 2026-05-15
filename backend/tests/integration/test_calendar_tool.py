@@ -194,8 +194,13 @@ async def test_calendar_list_events_happy_path(cal_env) -> None:
     assert result["count"] == 2
     ids = {e["id"] for e in result["events"]}
     assert ids == {"ev-1", "ev-2"}
+    # Subjects are sanitised + wrapped (pre-pilot Task 2). Identifier
+    # / structured fields like id stay unwrapped.
     subjects = {e["subject"] for e in result["events"]}
-    assert subjects == {"Standup", "Client call"}
+    assert subjects == {
+        "<user_data>Standup</user_data>",
+        "<user_data>Client call</user_data>",
+    }
 
 
 async def test_calendar_list_events_without_graph_ctx_raises(

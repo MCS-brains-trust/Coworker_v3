@@ -17,6 +17,16 @@ from coworker.orchestrator.tools import (
     ToolError,
     ToolRegistry,
 )
+from coworker.security.sanitise import sanitise_and_wrap
+
+# Payload string fields that may carry externally-sourced text
+# (interaction bodies, lesson text from past emails, document
+# extracts). These get sanitised + wrapped in <user_data>.
+# Other payload fields (ids, dates, enums, priorities, scores)
+# pass through untouched.
+_PAYLOAD_TEXT_FIELDS: tuple[str, ...] = (
+    "subject", "summary", "body", "text", "title", "content",
+)
 
 
 class MemoryQueryInput(BaseModel):
@@ -43,6 +53,17 @@ class MemoryQueryInput(BaseModel):
 async def _memory_query_handler(
     inp: MemoryQueryInput, ctx: AgentContext
 ) -> dict[str, Any]:
+    """Search memory; sanitise + wrap text payload fields.
+
+    Sanitised payload fields (per ``_PAYLOAD_TEXT_FIELDS``):
+    subject, summary, body, text, title, content — any of which
+    may have originated in an inbound email and round-trip back
+    to Claude via tool_result.
+
+    Untouched: kind, id, score (floats / strings), priority, dates,
+    and any other structured payload fields. They're emitted
+    verbatim.
+    """
     if ctx.embedder is None:
         raise ToolError(
             "memory_query is unavailable in this context "
@@ -60,11 +81,27 @@ async def _memory_query_handler(
                 "kind": item.kind,
                 "id": str(item.row_id),
                 "score": item.score,
-                "payload": item.payload,
+                "payload": _sanitise_payload(item.payload),
             }
             for item in items
         ]
     }
+
+
+def _sanitise_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Wrap user-content fields in ``<user_data>`` tags.
+
+    Pass-through for keys that aren't in ``_PAYLOAD_TEXT_FIELDS``
+    so identifier / metadata fields stay unchanged.
+    """
+    out: dict[str, Any] = {}
+    for k, v in payload.items():
+        if k in _PAYLOAD_TEXT_FIELDS and isinstance(v, str):
+            wrapped, _ = sanitise_and_wrap(v, max_length=4000)
+            out[k] = wrapped
+        else:
+            out[k] = v
+    return out
 
 
 def register(registry: ToolRegistry) -> None:

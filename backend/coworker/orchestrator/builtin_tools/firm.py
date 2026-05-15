@@ -13,6 +13,7 @@ from coworker.orchestrator.tools import (
     ToolDefinition,
     ToolRegistry,
 )
+from coworker.security.sanitise import sanitise_and_wrap
 
 
 class GetFirmInfoInput(BaseModel):
@@ -22,9 +23,20 @@ class GetFirmInfoInput(BaseModel):
 async def _get_firm_info_handler(
     inp: GetFirmInfoInput, ctx: AgentContext
 ) -> dict[str, Any]:
+    """Return firm identity; wrap the human-typed ``name``.
+
+    Sanitised: ``name`` — typed by the principal at bootstrap;
+    in principle attacker-controllable if the bootstrap CLI is
+    ever automated from form input. Cheap defence in depth.
+
+    Untouched: ``slug`` (URL-safe by construction), ``abn``
+    (validated 11-digit string), ``timezone`` (IANA name),
+    ``shadow_mode`` (boolean).
+    """
     firm = ctx.firm
+    wrapped_name, _ = sanitise_and_wrap(firm.name, max_length=200)
     return {
-        "name": firm.name,
+        "name": wrapped_name,
         "slug": firm.slug,
         "abn": firm.abn,
         "timezone": firm.timezone,

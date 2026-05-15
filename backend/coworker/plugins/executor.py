@@ -21,7 +21,7 @@ in the ``RunResult.status`` field (``failed`` /
 ``budget_exhausted`` / ``max_iterations``).
 """
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -160,14 +160,33 @@ async def execute_plugin(
     )
 
     writer = AgentTraceWriter(session, firm.id)
-    trace_metadata = {
+
+    # Pre-pilot Task 2: capture goal-text sanitiser warnings if the
+    # plugin exposes them. Plugins that compose their own goal
+    # without sanitisation just return the string as before; those
+    # that opt into ``compose_goal_with_warnings`` (smart_responder
+    # today) get warnings stamped on the trace metadata so the
+    # principal-side trace view shows what tripped during assembly.
+    compose_with_warnings = getattr(
+        plugin_cls, "compose_goal_with_warnings", None,
+    )
+    if compose_with_warnings is not None:
+        goal_text, goal_warnings = compose_with_warnings(effective_run)
+    else:
+        goal_text = plugin_cls.goal(effective_run)
+        goal_warnings = []
+
+    trace_metadata: dict[str, Any] = {
         "trigger": effective_run.trigger,
         "is_dry_run": effective_run.is_dry_run,
         "plugin_version": plugin_cls.version,
         "event_data": effective_run.event_data,
     }
+    if goal_warnings:
+        trace_metadata["goal_sanitiser_warnings"] = goal_warnings
+
     trace_id = await writer.start_trace(
-        goal=plugin_cls.goal(effective_run),
+        goal=goal_text,
         plugin_name=plugin_cls.name,
         metadata=trace_metadata,
     )
@@ -187,7 +206,7 @@ async def execute_plugin(
 
     return await engine.run(
         ctx,
-        goal=plugin_cls.goal(effective_run),
+        goal=goal_text,
         tools=plugin_tools,
         writer=writer,
         system_prompt=plugin_cls.system_prompt(effective_run),

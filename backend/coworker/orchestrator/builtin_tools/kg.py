@@ -25,6 +25,7 @@ from coworker.orchestrator.tools import (
     ToolError,
     ToolRegistry,
 )
+from coworker.security.sanitise import sanitise_and_wrap
 
 
 class KGEntityLookupInput(BaseModel):
@@ -53,22 +54,27 @@ class KGEntityLookupInput(BaseModel):
 async def _kg_entity_lookup_handler(
     inp: KGEntityLookupInput, ctx: AgentContext
 ) -> dict[str, Any]:
+    """Lookup entities by name; wrap each candidate's name.
+
+    Sanitised: ``name`` (entity names that originated in an
+    inbound email's extraction pass count as user-supplied).
+    Untouched: ``entity_id`` (UUID), ``similarity`` (float).
+    """
     result = await resolve_folder_candidates(
         ctx.session,
         folder_name=inp.name,
         threshold=inp.threshold,
         top_k=inp.top_k,
     )
-    return {
-        "candidates": [
-            {
-                "entity_id": str(c.entity_id),
-                "name": c.entity_name,
-                "similarity": c.similarity,
-            }
-            for c in result.candidates
-        ]
-    }
+    candidates: list[dict[str, Any]] = []
+    for c in result.candidates:
+        wrapped_name, _ = sanitise_and_wrap(c.entity_name, max_length=200)
+        candidates.append({
+            "entity_id": str(c.entity_id),
+            "name": wrapped_name,
+            "similarity": c.similarity,
+        })
+    return {"candidates": candidates}
 
 
 class KGGetRelationshipsInput(BaseModel):
