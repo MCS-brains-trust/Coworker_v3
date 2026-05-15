@@ -194,8 +194,12 @@ async def test_sweep_visits_marked_rows_only(sweep_env) -> None:
     sm = sweep_env["sm"]
     redis = sweep_env["redis"]
 
+    # ``now`` is the sweep's *cutoff* clock; token-refresh uses the
+    # real wall-clock, so anchor ``far_future`` there so the
+    # stored token doesn't look stale once today's date moves
+    # past the hardcoded one.
     now = _dt.datetime(2026, 5, 14, 13, 0, tzinfo=_dt.UTC)
-    far_future = now + _dt.timedelta(hours=2)
+    far_future = _dt.datetime.now(_dt.UTC) + _dt.timedelta(hours=2)
     # Marked firm.
     marked_id, _, _ = await _seed_firm_user_sub(
         sm, last_missed_at=now - _dt.timedelta(minutes=1),
@@ -233,8 +237,12 @@ async def test_sweep_visits_marked_rows_only(sweep_env) -> None:
 async def test_sweep_clears_marker_when_no_messages(sweep_env) -> None:
     sm = sweep_env["sm"]
 
+    # ``now`` is the sweep's *cutoff* clock; token-refresh uses the
+    # real wall-clock, so anchor ``far_future`` there so the
+    # stored token doesn't look stale once today's date moves
+    # past the hardcoded one.
     now = _dt.datetime(2026, 5, 14, 13, 0, tzinfo=_dt.UTC)
-    far_future = now + _dt.timedelta(hours=2)
+    far_future = _dt.datetime.now(_dt.UTC) + _dt.timedelta(hours=2)
     firm_id, _, _ = await _seed_firm_user_sub(
         sm, last_missed_at=now - _dt.timedelta(minutes=1),
         token_expires_at=far_future,
@@ -344,8 +352,12 @@ async def test_sweep_isolates_per_firm_errors(sweep_env) -> None:
     sm = sweep_env["sm"]
     redis = sweep_env["redis"]
 
+    # ``now`` is the sweep's *cutoff* clock; token-refresh uses the
+    # real wall-clock, so anchor ``far_future`` there so the
+    # stored token doesn't look stale once today's date moves
+    # past the hardcoded one.
     now = _dt.datetime(2026, 5, 14, 13, 0, tzinfo=_dt.UTC)
-    far_future = now + _dt.timedelta(hours=2)
+    far_future = _dt.datetime.now(_dt.UTC) + _dt.timedelta(hours=2)
     bad_id, _, bad_oid = await _seed_firm_user_sub(
         sm, last_missed_at=now - _dt.timedelta(minutes=1),
         token_expires_at=far_future,
