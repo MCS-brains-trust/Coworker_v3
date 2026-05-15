@@ -114,6 +114,16 @@ async def _email_get_message_handler(
         "is_read": message.is_read,
         "has_attachments": message.has_attachments,
         "conversation_id": message.conversation_id,
+        # Task 3: surface the RFC 5322 Message-ID and the raw
+        # internetMessageHeaders so the delivery_status_handler
+        # plugin can detect NDRs (Content-Type contains
+        # multipart/report) and parse the original Message-ID out
+        # of In-Reply-To / References for correlation. Headers are
+        # structured ``{name, value}`` pairs, not free text, so
+        # they're passed through verbatim — the universal engine
+        # rule still treats tool_result data as non-instructions.
+        "internet_message_id": message.internet_message_id,
+        "internet_message_headers": list(message.internet_message_headers),
     }
 
 

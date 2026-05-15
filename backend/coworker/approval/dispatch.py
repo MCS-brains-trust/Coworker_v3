@@ -53,7 +53,7 @@ from coworker.db.firms import list_active_firm_ids
 from coworker.db.models import ApprovalItem, Firm, User
 from coworker.db.session import firm_context
 from coworker.graph.context import GraphContext
-from coworker.graph.mail import create_draft
+from coworker.graph.mail import FullEmailMessage, create_draft
 from coworker.graph.user_context import resolve_user_graph_context
 
 
@@ -130,7 +130,9 @@ async def dispatch_email_draft(
         return await _mark_failed(item, "user_no_token", now)
 
     try:
-        await _create_outlook_draft(ctx, payload=payload, body_html=body_html)
+        draft = await _create_outlook_draft(
+            ctx, payload=payload, body_html=body_html,
+        )
     except ShadowModeBlocked:
         return await _mark_failed(item, "shadow_blocked", now)
     except ConnectorError as exc:
@@ -145,8 +147,18 @@ async def dispatch_email_draft(
 
     item.status = "sent"
     item.updated_at = now
+    # Task 3: capture the draft's proposed RFC 5322 Message-ID so an
+    # incoming NDR can be correlated back to this row, and flip
+    # delivery_status to 'sent' (the 4h confirmation sweep watches
+    # delivery_status_updated_at for the flip to 'delivered').
+    item.executed_internet_message_id = draft.internet_message_id
+    item.delivery_status = "sent"
+    item.delivery_status_updated_at = now
     await session.flush()
-    logger.info("dispatch sent item_id={}", item.id)
+    logger.info(
+        "dispatch sent item_id={} internet_message_id={!r}",
+        item.id, draft.internet_message_id,
+    )
     return "dispatched"
 
 
@@ -167,8 +179,8 @@ async def _create_outlook_draft(
     *,
     payload: dict[str, Any],
     body_html: str,
-) -> None:
-    await create_draft(
+) -> FullEmailMessage:
+    return await create_draft(
         ctx,
         to=list(payload["to"]),
         subject=str(payload["subject"]),

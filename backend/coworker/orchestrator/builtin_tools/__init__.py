@@ -25,6 +25,7 @@ Not yet wired (will arrive when Phase 6 needs them):
 - approval_* (Phase 9)
 """
 from coworker.orchestrator.builtin_tools import (
+    approval,
     calendar,
     clock,
     email,
@@ -50,6 +51,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     clock.register(registry)
     email.register(registry)
     calendar.register(registry)
+    approval.register(registry)
 
 
 __all__ = ["register_builtin_tools"]

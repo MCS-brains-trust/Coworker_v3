@@ -37,6 +37,9 @@ Coming as separate sub-phases of Phase 6:
   with cross-client trends.
 """
 from coworker.plugins.base import PluginRegistry
+from coworker.plugins.builtin.delivery_status_handler import (
+    DeliveryStatusHandlerPlugin,
+)
 from coworker.plugins.builtin.meeting_prep import MeetingPrepPlugin
 from coworker.plugins.builtin.smart_responder import SmartResponderPlugin
 
@@ -45,9 +48,11 @@ def register_builtin_plugins(registry: PluginRegistry) -> None:
     """Populate ``registry`` with every builtin plugin."""
     registry.register(SmartResponderPlugin)
     registry.register(MeetingPrepPlugin)
+    registry.register(DeliveryStatusHandlerPlugin)
 
 
 __all__ = [
+    "DeliveryStatusHandlerPlugin",
     "MeetingPrepPlugin",
     "SmartResponderPlugin",
     "register_builtin_plugins",

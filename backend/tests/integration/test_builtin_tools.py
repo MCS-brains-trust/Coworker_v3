@@ -433,6 +433,9 @@ def test_register_builtin_tools_populates_registry() -> None:
         "email_mark_as_read",
         "calendar_list_events",
         "meeting_brief_propose",
+        # Pre-pilot Task 3: NDR correlation tool used by the
+        # delivery_status_handler plugin.
+        "approval_mark_delivery_failed",
     }
 
 
@@ -441,7 +444,7 @@ def test_builtin_tools_render_anthropic_definitions() -> None:
     reg = ToolRegistry()
     register_builtin_tools(reg)
     defs = reg.to_anthropic_definitions()
-    assert len(defs) == 11
+    assert len(defs) == 12
     for d in defs:
         assert d["name"]
         assert d["description"]

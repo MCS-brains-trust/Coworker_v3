@@ -112,6 +112,29 @@ class ApprovalItem(Base):
     # the category isn't two-person.
     confidence: Mapped[float | None] = mapped_column()
 
+    # Delivery-side state machine (pre-pilot Task 3). Separate
+    # from ``status`` which tracks the approval-side machine.
+    #
+    #   'unknown'   — default; pre-dispatch.
+    #   'sent'      — dispatcher created the Outlook draft (or the
+    #                 send-side equivalent).
+    #   'delivered' — 4h elapsed without an NDR — presumed delivered.
+    #                 The confirmation sweep flips items here.
+    #   'failed'    — an NDR was correlated to
+    #                 ``executed_internet_message_id``.
+    delivery_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="unknown",
+        server_default="unknown",
+    )
+    delivery_status_detail: Mapped[str | None] = mapped_column(Text)
+    delivery_status_updated_at: Mapped[_dt.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    # Message-ID header Graph proposed when the draft was created;
+    # NDRs reference this in In-Reply-To / References so the
+    # delivery_status_handler plugin can correlate.
+    executed_internet_message_id: Mapped[str | None] = mapped_column(Text)
+
     created_at: Mapped[_dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -124,5 +147,9 @@ class ApprovalItem(Base):
             "status IN ('pending', 'approved', 'rejected', "
             "'sent', 'dispatch_failed')",
             name="approval_items_status_check",
+        ),
+        CheckConstraint(
+            "delivery_status IN ('unknown', 'sent', 'delivered', 'failed')",
+            name="approval_items_delivery_status_check",
         ),
     )

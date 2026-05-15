@@ -139,9 +139,13 @@ async def _seed_approved_draft(
         return row.id
 
 
-def _draft_response(*, msg_id: str = "drafted-1") -> dict:
+def _draft_response(
+    *,
+    msg_id: str = "drafted-1",
+    internet_message_id: str | None = "<draft-1@graph.local>",
+) -> dict:
     """Shape Graph returns from POST /me/messages."""
-    return {
+    body: dict = {
         "id": msg_id,
         "subject": "Re: your query",
         "from": None,
@@ -156,6 +160,9 @@ def _draft_response(*, msg_id: str = "drafted-1") -> dict:
         "isRead": False,
         "hasAttachments": False,
     }
+    if internet_message_id is not None:
+        body["internetMessageId"] = internet_message_id
+    return body
 
 
 # ===========================================================================
@@ -189,6 +196,43 @@ async def test_dispatch_transitions_approved_to_sent(dispatch_env) -> None:
             )
         ).scalar_one()
         assert row.status == "sent"
+        # Task 3: dispatcher captures Graph's proposed Message-ID
+        # and flips delivery_status='sent'.
+        assert row.executed_internet_message_id == "<draft-1@graph.local>"
+        assert row.delivery_status == "sent"
+        assert row.delivery_status_updated_at is not None
+
+
+async def test_dispatch_persists_no_internet_message_id_when_absent(
+    dispatch_env,
+) -> None:
+    """If Graph's response omits internetMessageId (e.g. some OWA
+    flows), the dispatcher still flips delivery_status='sent' but
+    executed_internet_message_id stays NULL — those rows can't be
+    NDR-correlated and will eventually be confirmed by the 4h sweep
+    or stay 'sent' indefinitely. Documented as the carry-forward."""
+    sm = dispatch_env["sm"]
+    firm_id, user_id = await _seed(sm)
+    dispatch_env["created"].append(firm_id)
+    item_id = await _seed_approved_draft(sm, firm_id, from_user_id=user_id)
+
+    with respx.mock(assert_all_called=True) as rmock:
+        rmock.post(_MESSAGES_URL).mock(
+            return_value=httpx.Response(
+                201, json=_draft_response(internet_message_id=None),
+            ),
+        )
+        await sweep_dispatch(sessionmaker=sm, firm_ids=[firm_id])
+
+    async with sm() as session, firm_context(firm_id):
+        row = (
+            await session.execute(
+                select(ApprovalItem).where(ApprovalItem.id == item_id)
+            )
+        ).scalar_one()
+        assert row.status == "sent"
+        assert row.executed_internet_message_id is None
+        assert row.delivery_status == "sent"
 
 
 async def test_dispatch_shadow_mode_marks_failed(dispatch_env) -> None:

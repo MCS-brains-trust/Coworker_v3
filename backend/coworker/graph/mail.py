@@ -68,7 +68,14 @@ _SELECT_FIELDS = ",".join([
 ])
 
 # Fuller projection for `get_message`: full body + all recipient lists
-# + conversationId for thread reconstruction in Phase 4 memory.
+# + conversationId for thread reconstruction in Phase 4 memory +
+# internetMessageId (Task 3) so the dispatcher can persist the
+# RFC 5322 Message-ID for later NDR correlation, and the
+# delivery_status_handler plugin can parse the Message-ID out of an
+# incoming NDR's References / In-Reply-To and match it back. The
+# internetMessageHeaders block is included so the plugin can detect
+# NDRs from their multipart/report Content-Type without a second
+# Graph round trip.
 _FULL_MESSAGE_SELECT_FIELDS = ",".join([
     "id",
     "subject",
@@ -81,6 +88,8 @@ _FULL_MESSAGE_SELECT_FIELDS = ",".join([
     "isRead",
     "hasAttachments",
     "conversationId",
+    "internetMessageId",
+    "internetMessageHeaders",
 ])
 
 AttachmentType = Literal["file", "item", "reference", "unknown"]
@@ -152,6 +161,19 @@ class FullEmailMessage(BaseModel):
     is_read: bool
     has_attachments: bool
     conversation_id: str | None = None
+    # RFC 5322 Message-ID (e.g. "<abc@host>"). Graph proposes this on
+    # draft creation; Outlook desktop preserves the value through
+    # send, OWA can regenerate (see ndr-correlation carry-forward).
+    # Used by the dispatcher to persist
+    # ``approval_items.executed_internet_message_id`` so an incoming
+    # NDR can be correlated back to the row that produced it.
+    internet_message_id: str | None = None
+    # Raw header list for NDR detection — the delivery_status_handler
+    # plugin inspects ``Content-Type`` and ``References`` /
+    # ``In-Reply-To`` to discriminate NDRs from regular inbox messages
+    # without a second Graph round trip. Each entry is
+    # ``{"name": ..., "value": ...}``.
+    internet_message_headers: list[dict[str, str]] = Field(default_factory=list)
 
 
 class EmailAttachment(BaseModel):
@@ -885,6 +907,16 @@ def _parse_full_message(raw: dict[str, Any]) -> FullEmailMessage:
         content=body_block.get("content") or "",
     )
 
+    headers_raw = raw.get("internetMessageHeaders") or []
+    headers: list[dict[str, str]] = []
+    for entry in headers_raw:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        value = entry.get("value")
+        if isinstance(name, str) and isinstance(value, str):
+            headers.append({"name": name, "value": value})
+
     return FullEmailMessage(
         id=raw["id"],
         subject=raw.get("subject") or "",
@@ -897,6 +929,8 @@ def _parse_full_message(raw: dict[str, Any]) -> FullEmailMessage:
         is_read=bool(raw.get("isRead", False)),
         has_attachments=bool(raw.get("hasAttachments", False)),
         conversation_id=raw.get("conversationId"),
+        internet_message_id=raw.get("internetMessageId"),
+        internet_message_headers=headers,
     )
 
 
