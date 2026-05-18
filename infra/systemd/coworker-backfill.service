@@ -8,9 +8,7 @@ Type=oneshot
 User=coworker
 Group=coworker
 WorkingDirectory=/opt/coworker/current/backend
-LoadCredentialEncrypted=coworker.env:/opt/coworker/secrets/production.env.age
-ExecStartPre=/bin/sh -c 'age -d -i /etc/coworker/age.key -o /run/credentials/coworker-backfill.service/coworker.env $CREDENTIALS_DIRECTORY/coworker.env'
-EnvironmentFile=/run/credentials/coworker-backfill.service/coworker.env
+EnvironmentFile=/opt/coworker/shared/credentials/coworker.env
 ExecStart=/opt/coworker/current/.venv/bin/python -m coworker.workers.backfill_missed
 
 # Hardening (matches sibling units)
