@@ -147,6 +147,26 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
     echo "DEPLOY_ALLOW_MIGRATION=1 set; proceeding with migration."
   fi
 
+  # ----- §2c-pre-env stage env file for pydantic-settings -----
+  # alembic's env.py imports `coworker.config:get_settings`, a pydantic
+  # BaseSettings with `model_config = SettingsConfigDict(env_file=
+  # _REPO_ROOT / ".env", ...)`. Running alembic from this script (i.e.
+  # outside systemd) means no env vars are set, so pydantic falls back
+  # to env_file — which doesn't exist in the release tree (`.env` is
+  # gitignored, so git archive never includes one).
+  #
+  # Copy the systemd EnvironmentFile to <release>/.env with the source's
+  # ownership (root:coworker) and mode (0640). Only the coworker user
+  # and the coworker group can read it; world has no access. The
+  # running systemd units remain on EnvironmentFile= and are unaffected
+  # (pydantic-settings precedence: env vars override env_file).
+  #
+  # .gitignore line 19 (`.env`) ensures any future `git archive` from
+  # this release dir cannot accidentally include the file.
+  sudo install -m 0640 -o root -g coworker \
+    /opt/coworker/shared/credentials/coworker.env \
+    "$RELEASE_DIR/.env"
+
   # ----- §2c alembic upgrade head -----
   # alembic.ini lives in backend/. Use the EXPLICIT venv binary
   # (not `uv run`) to match the venv-resolution mechanism the
@@ -354,6 +374,15 @@ rsync -az --delete -e "ssh -p $SSH_PORT" \
 #    backend/, so this path is broken against current main and is
 #    retained only as a structural escape hatch. Run the LOCAL path
 #    from the droplet for current main; see docs/ENVIRONMENT_AND_DEPLOY.md.
+
+# Stage env file for pydantic-settings (mirrors §2c-pre-env in LOCAL).
+# alembic's env.py imports Settings which needs the same credentials
+# the running systemd units get via EnvironmentFile=. Copy preserves
+# the source's root:coworker 0640 perms; .gitignore excludes `.env`
+# so any future git archive cannot include it.
+ssh -p $SSH_PORT "$HOST" \
+  "sudo install -m 0640 -o root -g coworker /opt/coworker/shared/credentials/coworker.env $RELEASE_DIR/.env"
+
 ssh -p $SSH_PORT "$HOST" "sudo -u coworker bash" <<INNER
   set -euo pipefail
   cd $RELEASE_DIR/backend
