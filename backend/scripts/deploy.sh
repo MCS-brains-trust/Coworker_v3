@@ -27,8 +27,44 @@ if [[ ! -d ./backend ]] || [[ ! -d ./infra/systemd ]]; then
 fi
 
 RELEASE="${1:-$(git rev-parse --short HEAD)}"
-DOMAIN="coworker.mcands.com.au"
-RELEASE_DIR="/opt/coworker/releases/$RELEASE"
+
+# ----- deployment-target seams (transparent in production) -----
+# Production-default-transparent env overrides. With every DEPLOY_*
+# var UNSET, every seam resolves to the production literal in place
+# since 2026-05-18 and behaviour is byte-for-byte identical to the
+# pre-seam script. Tests override individually to retarget a
+# throwaway environment without touching production. Form
+# ${VAR:-literal}, prefix DEPLOY_*, matching the existing
+# DEPLOY_ALLOW_MIGRATION convention at §2c-pre. Rationale:
+# docs/known-issues/2026-05-18-deploy-sh-untestable-no-test-seam.md.
+DEPLOY_RELEASES_DIR="${DEPLOY_RELEASES_DIR:-/opt/coworker/releases}"
+DEPLOY_CURRENT_SYMLINK="${DEPLOY_CURRENT_SYMLINK:-/opt/coworker/current}"
+DEPLOY_SYSTEMD_DIR="${DEPLOY_SYSTEMD_DIR:-/etc/systemd/system}"
+DEPLOY_ENV_FILE="${DEPLOY_ENV_FILE:-/opt/coworker/shared/credentials/coworker.env}"
+DEPLOY_DB_NAME="${DEPLOY_DB_NAME:-coworker}"
+DEPLOY_PG_SUPERUSER="${DEPLOY_PG_SUPERUSER:-postgres}"
+DEPLOY_DOMAIN="${DEPLOY_DOMAIN:-coworker.mcands.com.au}"
+DEPLOY_DROPLET_HOSTNAME="${DEPLOY_DROPLET_HOSTNAME:-coworker-v3-prod-syd1}"
+
+# Wrapper-binary seams. Defaults are the real system binaries; tests
+# override these to programmable shims that record invocations
+# instead of mutating real systemd or running real privileged
+# operations. UNSET resolves to the literal (production transparent);
+# empty-string is NOT supported because downstream `sudo -u <user>`
+# invocations require a wrapper that absorbs the `-u` argument (the
+# harness's fake-sudo does this). The :- form is used for symmetry
+# with the rest of this block and with DEPLOY_ALLOW_MIGRATION.
+SUDO="${DEPLOY_SUDO:-sudo}"
+SYSTEMCTL="${DEPLOY_SYSTEMCTL:-systemctl}"
+
+# Non-transparent opt-in flag: skip the dirty-tree refusal below.
+# Defaults to enforce (today's behaviour); test harnesses set this to
+# 1 only if they cannot present a clean checkout. The default of "0"
+# preserves enforcement byte-for-byte.
+DEPLOY_SKIP_GIT_CHECK="${DEPLOY_SKIP_GIT_CHECK:-0}"
+
+DOMAIN="$DEPLOY_DOMAIN"
+RELEASE_DIR="$DEPLOY_RELEASES_DIR/$RELEASE"
 
 # Unit-list constants. Shared by both deploy paths.
 #   ALWAYS_ON_SERVICES        — long-running; reload-or-restart / restart
@@ -62,8 +98,8 @@ TIMERS=(
 #
 # Hostname verified 2026-05-18 via `hostname` and `hostnamectl`:
 #   coworker-v3-prod-syd1
-DROPLET_HOSTNAME="coworker-v3-prod-syd1"
-if [[ "$(hostname)" == "$DROPLET_HOSTNAME" ]] && [[ -d /opt/coworker/releases ]]; then
+DROPLET_HOSTNAME="$DEPLOY_DROPLET_HOSTNAME"
+if [[ "$(hostname)" == "$DROPLET_HOSTNAME" ]] && [[ -d "$DEPLOY_RELEASES_DIR" ]]; then
   DEPLOY_MODE="local"
 else
   DEPLOY_MODE="push"
@@ -77,10 +113,15 @@ echo "Deploying $RELEASE (mode: $DEPLOY_MODE) to $DOMAIN..."
 if [[ "$DEPLOY_MODE" == "local" ]]; then
 
   # ----- refuse if tracked working tree is dirty -----
-  if ! git diff-index --quiet HEAD --; then
-    echo "Error: tracked working tree is dirty. Commit or stash before deploy."
-    git status --short
-    exit 1
+  # Skippable only via DEPLOY_SKIP_GIT_CHECK=1 (test harnesses with a
+  # non-clean checkout). Default unset → enforce, byte-identical to
+  # the pre-seam behaviour.
+  if [[ "$DEPLOY_SKIP_GIT_CHECK" != "1" ]]; then
+    if ! git diff-index --quiet HEAD --; then
+      echo "Error: tracked working tree is dirty. Commit or stash before deploy."
+      git status --short
+      exit 1
+    fi
   fi
 
   RESOLVED_SHA=$(git rev-parse "$RELEASE")
@@ -91,23 +132,23 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
   # but does not change their enabled state.
   declare -A PRE_DEPLOY_ENABLED
   for unit in "${ALWAYS_ON_SERVICES[@]}" "${TIMER_ACTIVATED_SERVICES[@]}" "${TIMERS[@]}"; do
-    PRE_DEPLOY_ENABLED["$unit"]=$(systemctl is-enabled "$unit" 2>/dev/null || echo "unknown")
+    PRE_DEPLOY_ENABLED["$unit"]=$($SYSTEMCTL is-enabled "$unit" 2>/dev/null || echo "unknown")
   done
 
   # ----- §1 build release via `git archive` (no .git, matches a81083a shape) -----
-  sudo -u coworker mkdir -p "$RELEASE_DIR"
-  git archive --format=tar "$RESOLVED_SHA" | sudo -u coworker tar -x -C "$RELEASE_DIR"
+  $SUDO -u coworker mkdir -p "$RELEASE_DIR"
+  git archive --format=tar "$RESOLVED_SHA" | $SUDO -u coworker tar -x -C "$RELEASE_DIR"
 
   # ----- §2a build venv at release ROOT -----
   # pyproject.toml + uv.lock live at the repo root, not under backend/.
   # uv sync must run from $RELEASE_DIR (root), producing $RELEASE_DIR/.venv.
-  sudo -u coworker bash -c "cd '$RELEASE_DIR' && uv sync --python python3.12"
+  $SUDO -u coworker bash -c "cd '$RELEASE_DIR' && uv sync --python python3.12"
 
   # ----- §2b pre-deploy pg_dump insurance -----
   # Taken BEFORE alembic upgrade (a destructive DB operation) and
   # before the symlink swap. Custom-format dump, sha256sum logged.
   BACKUP_FILE="/tmp/pre-deploy-backup-$(date +%Y%m%d-%H%M%S).dump"
-  sudo -u postgres pg_dump -Fc -d coworker > "$BACKUP_FILE"
+  $SUDO -u "$DEPLOY_PG_SUPERUSER" pg_dump -Fc -d "$DEPLOY_DB_NAME" > "$BACKUP_FILE"
   echo "Pre-deploy DB backup:"
   ls -lh "$BACKUP_FILE"
   sha256sum "$BACKUP_FILE"
@@ -128,8 +169,8 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
   # DEPLOY_ALLOW_MIGRATION=1. This gate performs no DB or symlink
   # mutation; on refusal nothing past §2b's read-only pg_dump has
   # touched the system.
-  DB_HEAD=$(sudo -u postgres psql -d coworker -tAc "select version_num from alembic_version;" | tr -d '[:space:]' || true)
-  RELEASE_HEAD=$(sudo -u coworker bash -c "cd '$RELEASE_DIR/backend' && '$RELEASE_DIR/.venv/bin/alembic' heads" | head -1 | awk '{print $1}')
+  DB_HEAD=$($SUDO -u "$DEPLOY_PG_SUPERUSER" psql -d "$DEPLOY_DB_NAME" -tAc "select version_num from alembic_version;" | tr -d '[:space:]' || true)
+  RELEASE_HEAD=$($SUDO -u coworker bash -c "cd '$RELEASE_DIR/backend' && '$RELEASE_DIR/.venv/bin/alembic' heads" | head -1 | awk '{print $1}')
   echo "Live DB alembic head:    ${DB_HEAD:-<none>}"
   echo "Release alembic head:    ${RELEASE_HEAD:-<none>}"
 
@@ -137,7 +178,7 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
     if [[ "${DEPLOY_ALLOW_MIGRATION:-0}" != "1" ]]; then
       echo ""
       echo "Pending migrations between DB head and release head:"
-      sudo -u coworker bash -c "cd '$RELEASE_DIR/backend' && '$RELEASE_DIR/.venv/bin/alembic' history -r '${DB_HEAD:-base}:$RELEASE_HEAD'" || true
+      $SUDO -u coworker bash -c "cd '$RELEASE_DIR/backend' && '$RELEASE_DIR/.venv/bin/alembic' history -r '${DB_HEAD:-base}:$RELEASE_HEAD'" || true
       echo ""
       echo "refusing to migrate live DB while previous code is still active;"
       echo "re-run with DEPLOY_ALLOW_MIGRATION=1 to acknowledge the migration"
@@ -163,8 +204,8 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
   #
   # .gitignore line 19 (`.env`) ensures any future `git archive` from
   # this release dir cannot accidentally include the file.
-  sudo install -m 0640 -o root -g coworker \
-    /opt/coworker/shared/credentials/coworker.env \
+  $SUDO install -m 0640 -o root -g coworker \
+    "$DEPLOY_ENV_FILE" \
     "$RELEASE_DIR/.env"
 
   # ----- §2c alembic upgrade head -----
@@ -174,24 +215,24 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
   # the environment at this irreversible step. For a release whose
   # head matches the live DB head this is a no-op; alembic does not
   # error on "already at head".
-  sudo -u coworker bash -c "cd '$RELEASE_DIR/backend' && '$RELEASE_DIR/.venv/bin/alembic' upgrade head"
+  $SUDO -u coworker bash -c "cd '$RELEASE_DIR/backend' && '$RELEASE_DIR/.venv/bin/alembic' upgrade head"
 
   # ----- §3a install systemd units -----
   # `-C` skips identical files so mtimes stay stable across no-op deploys.
-  sudo install -m 0644 -o root -g root -C \
+  $SUDO install -m 0644 -o root -g root -C \
     "$RELEASE_DIR/infra/systemd/"coworker-*.service \
     "$RELEASE_DIR/infra/systemd/"coworker-*.timer \
-    /etc/systemd/system/
+    "$DEPLOY_SYSTEMD_DIR/"
 
   # ----- §3b daemon-reload -----
   # Reloads systemd's view of the unit files. Running services keep
   # their current ExecStart until the restarts in §3d–§3f.
-  sudo systemctl daemon-reload
+  $SUDO $SYSTEMCTL daemon-reload
 
   # ----- §3c capture rollback target, then atomic symlink swap -----
-  PREV_RELEASE=$(readlink -f /opt/coworker/current)
+  PREV_RELEASE=$(readlink -f "$DEPLOY_CURRENT_SYMLINK")
   echo "Previous release (rollback target): $PREV_RELEASE"
-  sudo ln -sfn "$RELEASE_DIR" /opt/coworker/current
+  $SUDO ln -sfn "$RELEASE_DIR" "$DEPLOY_CURRENT_SYMLINK"
 
   # Rollback helper — called from any failure gate below.
   #   1. Re-point the symlink at the previous release.
@@ -207,14 +248,14 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
   #   4. Surface diagnostics (backup path, pre-deploy enabled state).
   rollback_to_prev() {
     echo ""
-    echo "Rolling back: /opt/coworker/current -> $PREV_RELEASE"
-    sudo ln -sfn "$PREV_RELEASE" /opt/coworker/current
-    sudo systemctl reload-or-restart coworker-api.service || true
+    echo "Rolling back: $DEPLOY_CURRENT_SYMLINK -> $PREV_RELEASE"
+    $SUDO ln -sfn "$PREV_RELEASE" "$DEPLOY_CURRENT_SYMLINK"
+    $SUDO $SYSTEMCTL reload-or-restart coworker-api.service || true
 
     # Stop (NOT disable) every sibling that this deploy started.
     # Use `|| true` so a unit that never came up doesn't trip set -e.
     for unit in coworker-worker.service "${TIMER_ACTIVATED_SERVICES[@]}" "${TIMERS[@]}"; do
-      sudo systemctl stop "$unit" || true
+      $SUDO $SYSTEMCTL stop "$unit" || true
     done
 
     echo ""
@@ -245,7 +286,7 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
     echo "" >&2
     echo "=== Deploy failed during §3 unit-start sequence ===" >&2
     echo "" >&2
-    echo "The §3c symlink swap completed; /opt/coworker/current now" >&2
+    echo "The §3c symlink swap completed; $DEPLOY_CURRENT_SYMLINK now" >&2
     echo "points at $RELEASE_DIR. A systemd unit start in §3d/§3e/§3f" >&2
     echo "returned non-zero, so the script stopped before the §4/§5/§6" >&2
     echo "verification gates ran. No automatic rollback has been" >&2
@@ -262,10 +303,10 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
     echo "needed." >&2
     echo "" >&2
     echo "-----8<----- BEGIN MANUAL ROLLBACK -----8<-----" >&2
-    echo "sudo ln -sfn \"$PREV_RELEASE\" /opt/coworker/current" >&2
-    echo "sudo systemctl reload-or-restart coworker-api.service" >&2
+    echo "$SUDO ln -sfn \"$PREV_RELEASE\" $DEPLOY_CURRENT_SYMLINK" >&2
+    echo "$SUDO $SYSTEMCTL reload-or-restart coworker-api.service" >&2
     for unit in coworker-worker.service "${TIMER_ACTIVATED_SERVICES[@]}" "${TIMERS[@]}"; do
-      echo "sudo systemctl stop $unit" >&2
+      echo "$SUDO $SYSTEMCTL stop $unit" >&2
     done
     echo "------8<----- END MANUAL ROLLBACK -----8<------" >&2
     echo "" >&2
@@ -284,23 +325,23 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
   trap print_manual_rollback_and_exit ERR
 
   # ----- §3d enable + restart always-on services -----
-  sudo systemctl enable coworker-api.service
-  sudo systemctl reload-or-restart coworker-api.service
+  $SUDO $SYSTEMCTL enable coworker-api.service
+  $SUDO $SYSTEMCTL reload-or-restart coworker-api.service
 
-  sudo systemctl enable coworker-worker.service
-  sudo systemctl restart coworker-worker.service
+  $SUDO $SYSTEMCTL enable coworker-worker.service
+  $SUDO $SYSTEMCTL restart coworker-worker.service
 
   # ----- §3e enable + restart timer-activated oneshots -----
   # Each `restart` fires one round of work immediately against the
   # new release, doubling as a wiring sanity check.
   for unit in "${TIMER_ACTIVATED_SERVICES[@]}"; do
-    sudo systemctl enable "$unit"
-    sudo systemctl restart "$unit"
+    $SUDO $SYSTEMCTL enable "$unit"
+    $SUDO $SYSTEMCTL restart "$unit"
   done
 
   # ----- §3f enable + start timers -----
   for unit in "${TIMERS[@]}"; do
-    sudo systemctl enable --now "$unit"
+    $SUDO $SYSTEMCTL enable --now "$unit"
   done
 
   # Disarm the §3 ERR trap. §4/§5/§6 use rollback_to_prev via
@@ -311,7 +352,7 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
   # Catches units that started and crashed loudly. The valid form is
   # `list-units --failed --type=service,timer 'coworker-*'`;
   # `systemctl --failed 'coworker-*'` (no `list-units`) is not.
-  FAILED_UNITS=$(systemctl list-units --failed --no-pager --no-legend --plain --type=service,timer 'coworker-*' | awk '{print $1}')
+  FAILED_UNITS=$($SYSTEMCTL list-units --failed --no-pager --no-legend --plain --type=service,timer 'coworker-*' | awk '{print $1}')
   if [[ -n "$FAILED_UNITS" ]]; then
     echo ""
     echo "Deploy failed: one or more coworker units are in failed state."
@@ -337,8 +378,8 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
 
   # Long-running services: must be active.
   for unit in "${ALWAYS_ON_SERVICES[@]}"; do
-    if ! systemctl is-active --quiet "$unit"; then
-      state=$(systemctl is-active "$unit" 2>&1 || true)
+    if ! $SYSTEMCTL is-active --quiet "$unit"; then
+      state=$($SYSTEMCTL is-active "$unit" 2>&1 || true)
       POSITIVE_FAILURES+=("$unit (expected active, got $state)")
     fi
   done
@@ -348,7 +389,7 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
   # SubState=dead). `is-active` returns 0 only for currently-running
   # units, so assert Result=success instead.
   for unit in "${TIMER_ACTIVATED_SERVICES[@]}"; do
-    result=$(systemctl show -p Result --value "$unit")
+    result=$($SYSTEMCTL show -p Result --value "$unit")
     if [[ "$result" != "success" ]]; then
       POSITIVE_FAILURES+=("$unit (expected Result=success, got Result=$result)")
     fi
@@ -356,8 +397,8 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
 
   # Timers: must be active (loaded + waiting / running).
   for unit in "${TIMERS[@]}"; do
-    if ! systemctl is-active --quiet "$unit"; then
-      state=$(systemctl is-active "$unit" 2>&1 || true)
+    if ! $SYSTEMCTL is-active --quiet "$unit"; then
+      state=$($SYSTEMCTL is-active "$unit" 2>&1 || true)
       POSITIVE_FAILURES+=("$unit (expected active, got $state)")
     fi
   done
@@ -399,10 +440,10 @@ if [[ "$DEPLOY_MODE" == "local" ]]; then
   # ----- §7 final state -----
   echo ""
   echo "=== Final state ==="
-  systemctl list-units --all --no-pager --no-legend --type=service,timer 'coworker-*'
+  $SYSTEMCTL list-units --all --no-pager --no-legend --type=service,timer 'coworker-*'
   echo ""
   echo "=== Timer schedule ==="
-  systemctl list-timers --all --no-pager 'coworker-*'
+  $SYSTEMCTL list-timers --all --no-pager 'coworker-*'
   echo ""
   echo "Deployed $RELEASE successfully."
   exit 0
