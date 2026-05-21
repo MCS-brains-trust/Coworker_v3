@@ -1,0 +1,341 @@
+Received: from ME3P282MB1617.AUSP282.PROD.OUTLOOK.COM (2603:10c6:220:a1::7) by
+ MEYP282MB2896.AUSP282.PROD.OUTLOOK.COM with HTTPS; Sat, 7 Feb 2026 00:26:02
+ +0000
+ARC-Seal: i=2; a=rsa-sha256; s=arcselector10001; d=microsoft.com; cv=pass;
+ b=W2TK8aTQhYLuo5mi+Vpy8cgz2pnATEEKHedIzAScS+tdDIucqrv5YAAF/A3S4kzs/S4d1+NYvOME/o2y4TVFTRDR3aTUMrt8npMyC74Z8o6kKfN9KpPimvEnUtWcOrej5aK1a3uZtLazr05CGoKtVqhPIUIpUoJGx51aIE6uVVFC9Vx0wDodMEVj3LqpltVUawVXJflH29n6aKkoq9Sqqs1L/xBNs2lmCIr7qPRMbNPK+S1H8GyUuDxkYFRcdZ869yCxzhx1gGEQ9rkhSf/dErkEQ0xHkUxxRQ9HMVKSBPkE/nKbdzetNRFWSc5rDY101ZjFBFdRyhLq4IYwzm7BBQ==
+ARC-Message-Signature: i=2; a=rsa-sha256; c=relaxed/relaxed; d=microsoft.com;
+ s=arcselector10001;
+ h=From:Date:Subject:Message-ID:Content-Type:MIME-Version:X-MS-Exchange-AntiSpam-MessageData-ChunkCount:X-MS-Exchange-AntiSpam-MessageData-0:X-MS-Exchange-AntiSpam-MessageData-1;
+ bh=A0Po0Kd8khoQH7+/GUF/g6XlaUPAZVjUeXNiFYHw3vU=;
+ b=jOH1MxHfd+40pg3SDKb7hi+HKiY5B1fKKb3QBi9ZzqhNnLZ8rgimjvpMgFT8FsfVSonUc2ebCer5+wLrkTS8nOW/MwCLktoOp8c5p7rgfGb/ffo/njKetl3uNv4Zy5WSBiBurv1PFea4oN9Q739GL50eG1MyygjEKPHa6biiLXEel0b458nkp8Xg9SS4IQNiVMXl4xXt4GatSp/Licj4Q05kc56H1VcR995DgBov2SyTZgGBx9Ox9Zi0YDl9hIybOeTDmlQLqmac2IDZBrWJ8Lf2sVaV+DSp6bXPL0Wa1s0nzwDGlMSs+LWwDgxK0Q+WIL6rJQIaJXQZmgMvHDluLA==
+ARC-Authentication-Results: i=2; mx.microsoft.com 1; spf=pass (sender ip is
+ 2a01:111:f403:d10c::1) smtp.rcpttodomain=mcands.com.au
+ smtp.mailfrom=outlook.com; dmarc=pass (p=none sp=quarantine pct=100)
+ action=none header.from=outlook.com; dkim=pass (signature was verified)
+ header.d=outlook.com; arc=pass (0 oda=0 ltdi=1)
+Received: from SY5PR01CA0083.ausprd01.prod.outlook.com (2603:10c6:10:1f5::17)
+ by ME3P282MB1617.AUSP282.PROD.OUTLOOK.COM (2603:10c6:220:a1::7) with
+ Microsoft SMTP Server (version=TLS1_2,
+ cipher=TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) id 15.20.9587.17; Sat, 7 Feb
+ 2026 00:26:00 +0000
+Received: from SY1PEPF00005A3C.ausprd01.prod.outlook.com
+ (2603:10c6:10:1f5:cafe::70) by SY5PR01CA0083.outlook.office365.com
+ (2603:10c6:10:1f5::17) with Microsoft SMTP Server (version=TLS1_3,
+ cipher=TLS_AES_256_GCM_SHA384) id 15.20.9587.17 via Frontend Transport; Sat,
+ 7 Feb 2026 00:25:57 +0000
+Authentication-Results: spf=pass (sender IP is 2a01:111:f403:d10c::1)
+ smtp.mailfrom=outlook.com; dkim=pass (signature was verified)
+ header.d=outlook.com;dmarc=pass action=none
+ header.from=outlook.com;compauth=pass reason=100
+Received-SPF: Pass (protection.outlook.com: domain of outlook.com designates
+ 2a01:111:f403:d10c::1 as permitted sender) receiver=protection.outlook.com;
+ client-ip=2a01:111:f403:d10c::1;
+ helo=SN4PR0501CU005.outbound.protection.outlook.com; pr=C
+Received: from SN4PR0501CU005.outbound.protection.outlook.com
+ (2a01:111:f403:d10c::1) by SY1PEPF00005A3C.mail.protection.outlook.com
+ (2603:10c6:18::127) with Microsoft SMTP Server (version=TLS1_3,
+ cipher=TLS_AES_256_GCM_SHA384) id 15.20.9587.10 via Frontend Transport; Sat,
+ 7 Feb 2026 00:25:59 +0000
+ARC-Seal: i=1; a=rsa-sha256; s=arcselector10001; d=microsoft.com; cv=none;
+ b=CYfR5GfU//C+Co1zWLVj/45tyu+C+nvU/8YD1eG+/uU9rPy3gYM2c8NeXFxLog//ZcsqZUWwFxTuggniCjxaydhRAgS9cRG2z3McbMEa34tsv8fVR85gG1ESlvKuwsGC2RXL14TvLfON/6d0+19SOyNI28ohBAkA7udaaNVC/wRFdcIPqyLBttTmkoWLIu+nU3Nfp42q0TUyi+6QwgGW19Oy29hBXHnkF9XfxIEqCnsq7ygED4wHvnLRXeXnMZ5HSreIdkCyhfCU1qoPmwdSmN3vOigOTba9gzi+Napejgkv0/9OiKAoDOzQZrs1s7mwyC4Tr+7A8HyVviZ9uxtyDQ==
+ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=microsoft.com;
+ s=arcselector10001;
+ h=From:Date:Subject:Message-ID:Content-Type:MIME-Version:X-MS-Exchange-AntiSpam-MessageData-ChunkCount:X-MS-Exchange-AntiSpam-MessageData-0:X-MS-Exchange-AntiSpam-MessageData-1;
+ bh=A0Po0Kd8khoQH7+/GUF/g6XlaUPAZVjUeXNiFYHw3vU=;
+ b=ouhnmP0gA+P66yqF6+YmTgKlLD5a1edl5zFapD7RaPmjPE4+t0AodwnZ/rav+U2wKSIbKX4dB1tL9GbpzSGqr2lwmTEGAY/kL0TtK1qTZBV48TwPqEhmadoslNUyVPtUFJpBuKQdhugGZZSQ6PnZNJLSD+Z97jdvQ4qqvWWcw4F+6xhSQUuYA91ES3JgPnDMB4aiKQIF+d/dQwBzBCUP/mW/oM/9wig1Ux84vHjHwiHT2cNI4aL3PK4lnhX/iaH+j6xmbeHMHRQSmUJZ6oy4ViF91uByWMAmHwLbt6LGGMeceHTZjuU1cteVnZpaToJkvUUKp5o5hpkk+J9xZHOn9Q==
+ARC-Authentication-Results: i=1; mx.microsoft.com 1; spf=none; dmarc=none;
+ dkim=none; arc=none
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=outlook.com;
+ s=selector1;
+ h=From:Date:Subject:Message-ID:Content-Type:MIME-Version:X-MS-Exchange-SenderADCheck;
+ bh=A0Po0Kd8khoQH7+/GUF/g6XlaUPAZVjUeXNiFYHw3vU=;
+ b=M5K86LzDtT4+6I6AvB5QvpbGcg+pPahyA5NL9wPk64cXUN4ENVwzSZu5Rz6RNlSk3jB+BIteS4jwdW4lmI23+xQXK2oroioKI2SFV+kJ8yMkTn8V4i2Qea433yx3bGsrAVu0jI+hHFjzRkHwuJOe6xCTbzwr948AIuKjto7GamEqU1/u8x4SQsmUxjeV3PW2MX0hVZINv4toclT6CNuxSIfukgUmveU6V+N0qHz64Ei7eWcV2kDV93zDwfUIWvJ0SLr3Gp9+lS9lJteGEOk11Ov04I439vtoIZ5dsugy8eG9HVs3aNvXUPCVDPt1WpS1Lrp0I9kgdovvASZ0/qKYOQ==
+Received: from LV3SPRMB0026.NAMP220.PROD.OUTLOOK.COM (2603:10b6:408:1da::12)
+ by SA1P220MB1892.NAMP220.PROD.OUTLOOK.COM (2603:10b6:806:3d9::22) with
+ Microsoft SMTP Server (version=TLS1_2,
+ cipher=TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) id 15.20.9587.15; Sat, 7 Feb
+ 2026 00:25:56 +0000
+Received: from LV3SPRMB0026.NAMP220.PROD.OUTLOOK.COM
+ ([fe80::ba9c:2daf:b810:8da8]) by LV3SPRMB0026.NAMP220.PROD.OUTLOOK.COM
+ ([fe80::ba9c:2daf:b810:8da8%5]) with mapi id 15.20.9587.010; Sat, 7 Feb 2026
+ 00:25:56 +0000
+From: Test Client <test@example.com>
+To: Elio Scarton <elio@mcands.com.au>
+Subject: FY25 - Tax Return Test Client 
+Thread-Topic: FY25 - Tax Return Test Client 
+Thread-Index: AQHcl8dwjvgO6AGRmkayVisBRVVFuw==
+Date: Sat, 7 Feb 2026 00:25:55 +0000
+Message-ID: <LV3SPRMB0026045809D0BAE0C3BD2DB0C767A@LV3SPRMB0026.NAMP220.PROD.OUTLOOK.COM>
+Accept-Language: en-AU, en-GB, en-US
+Content-Language: en-AU
+X-MS-Has-Attach:
+X-MS-TNEF-Correlator:
+msip_labels:
+x-ms-traffictypediagnostic: LV3SPRMB0026:EE_|SA1P220MB1892:EE_|SY1PEPF00005A3C:EE_|ME3P282MB1617:EE_|MEYP282MB2896:EE_
+X-MS-Office365-Filtering-Correlation-Id: a188ba18-b432-4a13-7781-08de65df7835
+X-Microsoft-Antispam-Untrusted: BCL:0;ARA:14566002|12050799012|461199028|15080799012|15030799006|8062599012|8060799015|41001999006|42300799018|5062599005|31061999003|9400799043|51005399006|19110799012|4601999015|10035399007|4302099013|3412199025|440099028|26104999006|102099032|13041999003|1602099012|40105399003;
+X-Microsoft-Antispam-Message-Info-Original: =?us-ascii?Q?IE9/e1bCFeor10TFaV9BasO8Lf/s+MySEqgrWoiIyjSXN/bSM4zGQ9CYJJVx?=
+ =?us-ascii?Q?Dir5k9dWWE7Bvx2qfqRJYw0wPVryY9ZGDCF4g9lg8/QOrc0ic8AUOxhrSFJP?=
+ =?us-ascii?Q?P1VhuZafCGN6FWm0DNb2G4R6Vx0bSBpfN7Sxta4ZUqWz0qN4qFLSLe2me7k0?=
+ =?us-ascii?Q?kYEvCvxrvbuf46013z5+MlZ1E+18/BT2GozcUBhpBUIbI2gxth6SV+lRx8QF?=
+ =?us-ascii?Q?ZXaRBqCbrfaNF+4UnI5anWYFpCU7HIyWj95cYnD8mDtM0Lx5l5KYTpfpu+04?=
+ =?us-ascii?Q?NnEw+Hltzt66ct13hIx/lZqkU8xQ2nweWtlGM2KFay6a8GRxIp6fWxOuChP8?=
+ =?us-ascii?Q?F+YDEXso9xCEks5d6eV4rWIefQyvH999zogpvq4MBrTOCyb4RYsp8H1YuK6A?=
+ =?us-ascii?Q?ySvCO+5J+iUasjQuiAp+zDphA+pz0vAJCJIx7JEVtv54FLaMd2wTEf+vckjY?=
+ =?us-ascii?Q?x0+vF9qpUR5YIQuvG6GdP4mTDkYsWbpj+1xbE5FPLrHw4yGhY7D3hvhzT7Oc?=
+ =?us-ascii?Q?2CM4Zc2d1iOUM8RaioULsJjzZoYr36EY0JGR//mJnoJHJjkysq5phKdmWgNp?=
+ =?us-ascii?Q?d07qBOzjk/C+GVyVE/dwoefalxnNcYjI/gP7qRvDGypNgvSnJYnyXSgNvXud?=
+ =?us-ascii?Q?xYs5y817iA4KFc5khfmDkN/H5nKV65KWaEW29/74+YnSSyV4I9ws5Lmilhpt?=
+ =?us-ascii?Q?HQsr0ushbImWRMH1O5jZWdWLRY0djF8dH9DlNwVCp329Cy2xunoqfr7Nsdy6?=
+ =?us-ascii?Q?U32dap7I7B5ls5N96/+PumAqbDEzWq+xH+VYKFIFwvonaZyS7ef+4tC93QLX?=
+ =?us-ascii?Q?xUKQW27Z9SfX2PPRVrn9B5ZTWnUALveM7XnFHXFG0JtWrPaREabm5rnuZ+eQ?=
+ =?us-ascii?Q?pf1VwPWFRUkZqrbiDop1mX3pjnNnzXfJkJS0IyjL6ptX2j7U+cfSc/OkWQcg?=
+ =?us-ascii?Q?VKDbqlDXjjousiuTgbuhfzEm6v8G5g4SSJnGVsHz1fcS95+QhEYhG3ItOmKy?=
+ =?us-ascii?Q?hD3Hxv67mwh5AUeK9BTP8HVc+QXLnUQtxvi6qW+PmbnPPX0h1/lH9CawXjKM?=
+ =?us-ascii?Q?M4ryOmIRchTLuTeT/bmkWkUZIxLfK4LfzBxkOCqiiD1+jpsM/672zbDcCWaG?=
+ =?us-ascii?Q?X1t5ei+RHvokshs56qRHY/saged5dEDkCzmqDYQSi7b/F3AM6gL417MORWKU?=
+ =?us-ascii?Q?6h6Z2KhU0hKaMnv5eWo4I9Hu8GO1jwVgYq7+6MaVFNxRkU4mayfG5sTVmVUS?=
+ =?us-ascii?Q?KKAUWJVzp5Pwx5TEOGNpMVM1X9a1L+7KGFABOdUQmahQV5XmsKoDOi2fv8AE?=
+ =?us-ascii?Q?AATRyKkv/IMmi9z5Y3T4leLJmuDfJZ+sO94lx1UDYiWjMbwuRa1PH9mA1ncK?=
+ =?us-ascii?Q?Gyy7N53pP6gDn8IIg5y1Y9Ji/gba8TRKASG+Iolms1E4FLMtcd/tjNHvZa6E?=
+ =?us-ascii?Q?bVISmCZwNkyW6sW+wuG8OUbWjBvs8H+NmvsqNxqBVLFedMpeZ9S3MVhQ68Y/?=
+ =?us-ascii?Q?l0JFiXheZ+9XgM63Ha/IIYHNMueIqd1hg0Ceqglt2fI/oFVoqD92I5ScWQ?=
+ =?us-ascii?Q?=3D=3D?=
+X-MS-Exchange-AntiSpam-MessageData-Original-ChunkCount: 1
+X-MS-Exchange-AntiSpam-MessageData-Original-0: =?iso-8859-1?Q?Fzo1BQ/FR0hPqIiN21GNPTnMA9MMSpSoSqql72LHPyJhUBl8MCueVRKHYL?=
+ =?iso-8859-1?Q?aww+GSI+rYUPLmWInZBIn8BHZPbzULXYFphB4rLrUTV+wjSBE3v5zJcPM+?=
+ =?iso-8859-1?Q?TGPls8+DSnLJ5i3/KHyn/Sv8gORJ2oU13LQU3DTrukeobzAtfFy6toHsuc?=
+ =?iso-8859-1?Q?E/3qy89CAXIc1/0k1HhZLjC/5PApDLFYi2Zs+fSug9Cb/8Y6ws4zDzE35b?=
+ =?iso-8859-1?Q?67czNadQ4ozTC9PkFF1KKLcWhy4gQscpo4IMvsZWghrFkhcItzwBLlXAOj?=
+ =?iso-8859-1?Q?qDDlrfTggu62kqOIt/SWGeRVv5b3FjRTUKxkK/oenk8Tec/bilyN5H0bF1?=
+ =?iso-8859-1?Q?3IOXpxm5pnHt1Eqly0ID4iilih6SoWZLAIxkf+cTQk5Cqe+ILRrXZwUf3+?=
+ =?iso-8859-1?Q?U6d/7EWIsrtycvyJvZyp9FHteImvf/RZnsdn0LbER4AaVvxcQw87ggKC2X?=
+ =?iso-8859-1?Q?Xj/8upEghLJwAS4P5M0gyAowAU31MnN+D1oIy7WSaDxbOfikUJH2hcRMoT?=
+ =?iso-8859-1?Q?ZJfwTx166AEMmcFLMrFacjQ8FRQNxYZR+SKUyPZOdX0g/rPpYIdt5Hp84p?=
+ =?iso-8859-1?Q?c6c+PMJQkVfGUdTfa5f/6n9oThWci6hRLBkEEl2gHO1xZsmWm6gWCg2Ae7?=
+ =?iso-8859-1?Q?O6wRLWtXTkdACLh5dHhrIRkPx7jocEXo973VkgnJALEIzEzFkxv7Nsg2rO?=
+ =?iso-8859-1?Q?SHQbX8uAFItEF9m3rzQV4CCLg9JqU6N1tITLk1HCLS5up2TcG+cNfQWHx3?=
+ =?iso-8859-1?Q?Me8IAGPIQ0Au+Lkw7EtWMKM2VVHMPZcniSgthP1QM3GhlH2t2PEjPKno20?=
+ =?iso-8859-1?Q?okK8drya5pYMACt/WJccQBmUcAPto12E4C/gZ7bRCfIl46woknuF4KLaov?=
+ =?iso-8859-1?Q?8WbrPjsX8GgMgv7fH59GJTd9cCACUXGIXRqjWG2CjDE6QNkLLx0ZfccrYe?=
+ =?iso-8859-1?Q?5JTrWB1KD1NLtfO/AqMgA701ppsXTc5OnvnXyVogf+9YHmqdnSgdb3GxVS?=
+ =?iso-8859-1?Q?LOnhlvtBdeN1VwXxxG42wRL4qxx0PAiCAVKvAs6JzGRMtNez1GGIbC8nDv?=
+ =?iso-8859-1?Q?osQKT0OUNVeEZrPpAtOM/uZUqMQMp8zWx5s9bPRXFqZSvjj9tt4mYuivhd?=
+ =?iso-8859-1?Q?nVzai0EEUTbxOTGZWpRgi2N1hq14nyWEN2mu/Xv1VorciFJDYn9g6joMTT?=
+ =?iso-8859-1?Q?vfPBDSz73O1JGp4/fqFiHxIinZ8PQkZ0Q9H7L58tTiRepSgUVYCO1Cx2df?=
+ =?iso-8859-1?Q?S2nJziOY3o1YxGDgIY6GlPj9KdAx/OJplSENMWcrk6KkPiH5jU6GaKtBLc?=
+ =?iso-8859-1?Q?U6IiWe19aFEy5nRC3zYM1N9aTy5I0whiD7bNao9YCg+cODKt51H2JMXj4A?=
+ =?iso-8859-1?Q?XBjmwTpVcGMUxPlXD3berHRhE8UVx26cVvNopv/kHAJEfmoxl5RTIHCDam?=
+ =?iso-8859-1?Q?xwzUp3YgK3bQZvlb?=
+Content-Type: multipart/alternative;
+	boundary="_000_LV3SPRMB0026045809D0BAE0C3BD2DB0C767ALV3SPRMB0026NAMP22_"
+X-MS-Exchange-Transport-CrossTenantHeadersStamped: SA1P220MB1892
+Return-Path: test@example.com
+X-MS-Exchange-Organization-ExpirationStartTime: 07 Feb 2026 00:26:00.2071
+ (UTC)
+X-MS-Exchange-Organization-ExpirationStartTimeReason: OriginalSubmit
+X-MS-Exchange-Organization-ExpirationInterval: 1:00:00:00.0000000
+X-MS-Exchange-Organization-ExpirationIntervalReason: OriginalSubmit
+X-MS-Exchange-Organization-Network-Message-Id: a188ba18-b432-4a13-7781-08de65df7835
+X-EOPAttributedMessage: 0
+X-EOPTenantAttributedMessage: 88ea4eb1-1dce-414e-bbfe-ce0c51a5bd98:0
+X-MS-Exchange-Organization-MessageDirectionality: Incoming
+X-MS-Exchange-Transport-CrossTenantHeadersStripped: SY1PEPF00005A3C.ausprd01.prod.outlook.com
+X-MS-Exchange-Transport-CrossTenantHeadersPromoted: SY1PEPF00005A3C.ausprd01.prod.outlook.com
+X-MS-PublicTrafficType: Email
+X-MS-Exchange-Organization-AuthSource: SY1PEPF00005A3C.ausprd01.prod.outlook.com
+X-MS-Exchange-Organization-AuthAs: Anonymous
+X-MS-Office365-Filtering-Correlation-Id-Prvs: 73d97c22-43c3-4f9b-1d8f-08de65df75a7
+X-MS-Exchange-Organization-SCL: 1
+X-Microsoft-Antispam: BCL:0;ARA:13230040|7093399015|2040899013|28032699018|8096899003|13003099007;
+X-Forefront-Antispam-Report: CIP:2a01:111:f403:d10c::1;CTRY:;LANG:en;SCL:1;SRV:;IPV:NLI;SFV:NSPM;H:SN4PR0501CU005.outbound.protection.outlook.com;PTR:mail-southcentralusazolkn190110001.outbound.protection.outlook.com;CAT:NONE;SFS:(13230040)(7093399015)(2040899013)(28032699018)(8096899003)(13003099007);DIR:INB;
+X-MS-Exchange-CrossTenant-OriginalArrivalTime: 07 Feb 2026 00:25:59.6359
+ (UTC)
+X-MS-Exchange-CrossTenant-Network-Message-Id: a188ba18-b432-4a13-7781-08de65df7835
+X-MS-Exchange-CrossTenant-Id: 88ea4eb1-1dce-414e-bbfe-ce0c51a5bd98
+X-MS-Exchange-CrossTenant-RMS-PersistedConsumerOrg: 00000000-0000-0000-0000-000000000000
+X-MS-Exchange-CrossTenant-rms-persistedconsumerorg: 00000000-0000-0000-0000-000000000000
+X-MS-Exchange-CrossTenant-AuthSource: SY1PEPF00005A3C.ausprd01.prod.outlook.com
+X-MS-Exchange-CrossTenant-AuthAs: Anonymous
+X-MS-Exchange-CrossTenant-FromEntityHeader: Internet
+X-MS-Exchange-Transport-CrossTenantHeadersStamped: ME3P282MB1617
+X-MS-Exchange-Transport-EndToEndLatency: 00:00:03.0854366
+X-MS-Exchange-Processed-By-BccFoldering: 15.20.9587.013
+X-Message-Flag: Flag for follow up
+X-Microsoft-Antispam-Mailbox-Delivery:
+	ucf:0;jmr:0;auth:0;dest:I;ENG:(910005)(944506478)(944626604)(920097)(930201)(20251009114)(140003);
+X-Microsoft-Antispam-Message-Info:
+	=?iso-8859-1?Q?IUbNrXiePq8nbihuFOTqqoB8K0fa/KhPJLlBjEqfayFpWSQBS7CdZtdPab?=
+ =?iso-8859-1?Q?hJloP6pYJyZnqQZls8YHKMr9BB5fBf+W30gsN/WlfQbUvemhgfbmMtZ0m9?=
+ =?iso-8859-1?Q?/ZjpdDtLn3Sps7mA0J6fBMhyNUyJjxU2oUw0C6MyqCkwrvqnR9NbfBpFyh?=
+ =?iso-8859-1?Q?3FbiJjrt8KwCP6c0ACyrSRShokfvaZW+/ggrHbbJwDu4XJa5lIXeph5pIj?=
+ =?iso-8859-1?Q?mCpXkySGGvez0z8MjvezaB3AUqbKq+f0UjD5sZGYO5T8gssfevRAV7lTiG?=
+ =?iso-8859-1?Q?V1qvkBrrH4vfUlvXB8mGg1cqMMHdrZw9KTHhtU1poXCpHRXEffT/SwLEuG?=
+ =?iso-8859-1?Q?v+xwnWvzEK9lSv9ONfnwdm5YThYF5zQwgB8B1494GDuKSql7OC0cocJyfT?=
+ =?iso-8859-1?Q?8NxnW7C74rDZ9dwM2DmJygrJ+PCh/YasU7CuSdtq8ABV89d6QGbp/oQk/Z?=
+ =?iso-8859-1?Q?XBG8JNP/MiLasYX9BFFAV7ZGrol/SVYvoE2eJ5oOH4JgalvfkYVSPd+04q?=
+ =?iso-8859-1?Q?kQObAVBnf9OTILEmKcFRtKiRcAKTQ7BlXuu9qnxnV81mz1RuqzDQGz6JQp?=
+ =?iso-8859-1?Q?jITVb2hYUL5c2Opan0bImHY5z0J8qMVG5fHgilNQ/f1xYRZ/bT+aLnyN5F?=
+ =?iso-8859-1?Q?lDTIgjrNDZSAwjOOocZvQBsz6j7aVqdD0HjspPD8OO+uvKDXwdrj7ZxuBM?=
+ =?iso-8859-1?Q?ImFDiflLPlkqUgE4HdiDcrPb/hAsCgRT54v+VLCHXfurBHH8Ac5mGsbkcd?=
+ =?iso-8859-1?Q?6jJxRNssBZTQx0gWsQw+wT4qGVH/htZZJBCAQze6wy+r3BhZwL+C0ywgB2?=
+ =?iso-8859-1?Q?doPV3H1pK1l1mVPwlt4mEsytEAM2MDrxhwf39ou7N1eQFUzVPvPtUJMmIx?=
+ =?iso-8859-1?Q?wFMTCgPXX8XrFjXtxG+shunXsor2h4kiD6FTeH5RgKP/Tdb0SmSTl6QZoP?=
+ =?iso-8859-1?Q?/j7Mumk8P1EIrtkRufi+EO9pCWLowzZzONZm3AhqXdoaXVzoh6gJZJ8GXp?=
+ =?iso-8859-1?Q?jAO+Gh2hXd3JsZQGnciW5287DyzhfcwAX3JBBoWCcjKSEAzOMBYr6xSqbT?=
+ =?iso-8859-1?Q?k9XNfdptQIHrNhNO+P+8WJnGJJZKc6S9fqWoZptbT8LiFE3quzgAFWnH6u?=
+ =?iso-8859-1?Q?lQ9mXJK2kl1GjFLhrRAoJXTifxcVmar8qYEq75m5rCN8wDBvy6Mh0x4dvg?=
+ =?iso-8859-1?Q?qv+MESYY8bF3afo5bgEiKsmUcDfKWetLtBguyJN0bGSfJaySCZk4nwHiV1?=
+ =?iso-8859-1?Q?JqDVD3FUgSo403eJN8BCwYBOu4rCw0WWlLmPQV/OSoCsYQK6ge+6XhTaTa?=
+ =?iso-8859-1?Q?Pjvm9gKk1kQCzV+ZQqi3Oti3zgfre9ZbzSXi8MVVe6B4/Y/4KDWYcB3kHH?=
+ =?iso-8859-1?Q?5Cpc7nBx/JHsZxUQ/QJ3nCdRFtqTg8WUXKNBNJNsa0TxiM3xQ+wTgjc5X1?=
+ =?iso-8859-1?Q?HGZ+W6xP9Q7GFKAiVt2sAplLdjLoA8fwuL3/lVhMLwqmXWMU1zrrcO5uIj?=
+ =?iso-8859-1?Q?fR8IYoKShGE1KiCBNTnQCAStknlmfZNp5eRQ19uGLW3uuSOYsHToud2Cxo?=
+ =?iso-8859-1?Q?smbd+6Y2NdSikae7c5vBHFmYZWHajGQWK8qe/xmSWa5ForZ2yGPep/2Pxx?=
+ =?iso-8859-1?Q?RlL0GCvjHqbusM1ojaf3sf42O58sZUy4/q+ucvCgya6get4U/pznIDWwpi?=
+ =?iso-8859-1?Q?l5s3fHGYMfuyGh5dQEcz3URff/YXJnguK+O2OO/I2J9RW7d3ewiOzhj4vr?=
+ =?iso-8859-1?Q?bR3tj415BU001Zzc90S9Wvz6MLdot15y+rMCTkCfyrzP0MHi0vG7MjcotX?=
+ =?iso-8859-1?Q?H+MM2MsI15hhIvrjIuPHJ/3MniiHYuomBi37ZYKnrSUPQERg0If8z8gsOU?=
+ =?iso-8859-1?Q?Qcmjw3BC/xUaKvhXydpvWSutssCSde+yBRGylEjy7NVehEOVUsJFRPZ70Q?=
+ =?iso-8859-1?Q?f7pTS45iURJ8p3sxvAkf7poXHEp/L0xtjizTosTsVQGiEVcb3OTkS0rESv?=
+ =?iso-8859-1?Q?JTXVZW+iOnY42bQQ6vC84OKCor7chp/8u/uyyXWOJjuudDqumFTIMECH8O?=
+ =?iso-8859-1?Q?vWeGfLK4JtK+nkBFIYIfPJMwZWof9Jo9drF9IABiALTNlWremd4YPAwYgR?=
+ =?iso-8859-1?Q?UrSkSygv/ydQReJFMkhccLfBxGWo8iMz7I2of/le7g+Yy8EkpcA8PgJSza?=
+ =?iso-8859-1?Q?SSJjov40lSxb5i9GXFjMr/Ww1JOyMQ+axn24/HOeYqO5qv4SF1qf6kcUZl?=
+ =?iso-8859-1?Q?oeTmOJFLPFjcRPyfDxE6KRWZ93j56EY2nQSrfkSN7D8QXLcU65VGA+ZK6b?=
+ =?iso-8859-1?Q?bJbku5SuWDJ4A+yc0XeTJL5jiWCvORAJXEWaUL+45fF4YK69hbc148Vmw1?=
+ =?iso-8859-1?Q?l/faZiiKvRQZ/6dLCjKn1jJQAMYJjZPm1k2tEstl3djqXOj5Re84hQEMwl?=
+ =?iso-8859-1?Q?lXbhSkyxqQ10xi7TyWmwy08VlDkGD66f0yNclKNc4+VS172xFBJz1uWKIh?=
+ =?iso-8859-1?Q?8wqjvijvEsKA=3D=3D?=
+MIME-Version: 1.0
+
+--_000_LV3SPRMB0026045809D0BAE0C3BD2DB0C767ALV3SPRMB0026NAMP22_
+Content-Type: text/plain; charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+Hi Elio,
+
+Hope you are well.
+
+Can you please start taking a look and estimating my tax return for FY 25 w=
+hich has been very delayed....
+
+You will have all the items which have been deprecated from last tax return=
+ however use below to see additional costs.
+
+Link:source_budget.xlsx<[removed: client cloud share link]>
+
+I've shared a link as I may make some amendments to it.
+
+If you cannot access please let me know.
+
+Regards,
+
+Test Client
+M:0400 000 000
+E: test@example.com
+
+--_000_LV3SPRMB0026045809D0BAE0C3BD2DB0C767ALV3SPRMB0026NAMP22_
+Content-Type: text/html; charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+<html><head>
+<meta http-equiv=3D"Content-Type" content=3D"text/html; charset=3Diso-8859-=
+1">
+<style type=3D"text/css" style=3D"display:none;"> P {margin-top:0;margin-bo=
+ttom:0;} </style>
+</head>
+<body dir=3D"ltr">
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+Hi Elio,</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+<br>
+</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+Hope you are well.&nbsp;</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+<br>
+</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+Can you please start taking a look and estimating my tax return for FY 25 w=
+hich has been very delayed....&nbsp;</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+<br>
+</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+You will have all the items which have been deprecated from last tax return=
+ however use below to see additional costs.&nbsp;</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+<br>
+</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+Link:<a class=3D"OWAAutoLink" id=3D"OWA3aa0350f-7c83-5780-2358-d61b404f4a58=
+" href=3D"[removed: client cloud share link]">source_budget.xlsx</a></div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+<br>
+</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+I've shared a link as I may make some amendments to it.</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+<br>
+</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+If you cannot access please let me know.&nbsp;</div>
+<div class=3D"elementToProof" id=3D"Signature">
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+<br>
+</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+Regards,</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+<br>
+</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+Test Client&nbsp;</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+M:0400 000 000</div>
+<div style=3D"font-family: Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, =
+Calibri, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);" clas=
+s=3D"elementToProof">
+E: test@example.com</div>
+</div>
+</body>
+</html>
+
+--_000_LV3SPRMB0026045809D0BAE0C3BD2DB0C767ALV3SPRMB0026NAMP22_--
