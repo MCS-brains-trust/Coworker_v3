@@ -105,7 +105,7 @@ async def ensure_subscription(
         resource: Graph resource path. For an Outlook inbox use
             ``INBOX_MESSAGES_RESOURCE_TEMPLATE.format(azure_object_id=...)``.
         notification_url: where Graph will POST. Public origin +
-            ``/webhooks/graph/{firm_slug}``.
+            ``/api/v1/webhooks/graph/{firm_slug}``.
         now: injection point for testing; defaults to UTC now.
         ttl: requested subscription lifetime. Capped by Microsoft;
             see ``DEFAULT_SUBSCRIPTION_TTL``.

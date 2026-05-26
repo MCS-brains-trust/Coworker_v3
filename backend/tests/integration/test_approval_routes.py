@@ -153,7 +153,7 @@ def test_list_pending_returns_seeded_items(routes_env) -> None:
     b = asyncio.run(_seed_item(sm, firm_id, summary="Second"))
 
     client = _client(user_id=user_id, firm_id=firm_id)
-    resp = client.get("/approval/pending")
+    resp = client.get("/api/v1/approvals/pending")
     assert resp.status_code == 200
     body = resp.json()
     ids = {item["id"] for item in body}
@@ -164,7 +164,7 @@ def test_list_pending_returns_seeded_items(routes_env) -> None:
 
 def test_pending_requires_auth(routes_env) -> None:
     client = TestClient(app)  # no cookie
-    resp = client.get("/approval/pending")
+    resp = client.get("/api/v1/approvals/pending")
     assert resp.status_code == 401
 
 
@@ -172,7 +172,7 @@ def test_get_one_returns_404_for_missing(routes_env) -> None:
     user_id = routes_env["user_id"]
     firm_id = routes_env["firm_id"]
     client = _client(user_id=user_id, firm_id=firm_id)
-    resp = client.get(f"/approval/{uuid.uuid4()}")
+    resp = client.get(f"/api/v1/approvals/{uuid.uuid4()}")
     assert resp.status_code == 404
 
 
@@ -184,7 +184,7 @@ def test_get_one_returns_item(routes_env) -> None:
     item_id = asyncio.run(_seed_item(sm, firm_id, summary="One"))
 
     client = _client(user_id=user_id, firm_id=firm_id)
-    resp = client.get(f"/approval/{item_id}")
+    resp = client.get(f"/api/v1/approvals/{item_id}")
     assert resp.status_code == 200
     body = resp.json()
     assert body["id"] == str(item_id)
@@ -200,7 +200,7 @@ def test_approve_transitions_pending_to_approved(routes_env) -> None:
 
     client = _client(user_id=user_id, firm_id=firm_id)
     resp = client.post(
-        f"/approval/{item_id}/approve",
+        f"/api/v1/approvals/{item_id}/approve",
         json={"notes": "LGTM"},
     )
     assert resp.status_code == 200
@@ -229,10 +229,10 @@ def test_approve_already_decided_returns_409(routes_env) -> None:
     item_id = asyncio.run(_seed_item(sm, firm_id))
 
     client = _client(user_id=user_id, firm_id=firm_id)
-    first = client.post(f"/approval/{item_id}/approve")
+    first = client.post(f"/api/v1/approvals/{item_id}/approve")
     assert first.status_code == 200
 
-    second = client.post(f"/approval/{item_id}/approve")
+    second = client.post(f"/api/v1/approvals/{item_id}/approve")
     assert second.status_code == 409
 
 
@@ -245,7 +245,7 @@ def test_reject_transitions_pending_to_rejected(routes_env) -> None:
 
     client = _client(user_id=user_id, firm_id=firm_id)
     resp = client.post(
-        f"/approval/{item_id}/reject",
+        f"/api/v1/approvals/{item_id}/reject",
         json={"notes": "Wrong tone"},
     )
     assert resp.status_code == 200
@@ -258,7 +258,7 @@ def test_approve_unknown_id_returns_404(routes_env) -> None:
     user_id = routes_env["user_id"]
     firm_id = routes_env["firm_id"]
     client = _client(user_id=user_id, firm_id=firm_id)
-    resp = client.post(f"/approval/{uuid.uuid4()}/approve")
+    resp = client.post(f"/api/v1/approvals/{uuid.uuid4()}/approve")
     assert resp.status_code == 404
 
 
@@ -290,10 +290,10 @@ def test_cross_firm_get_returns_404(routes_env) -> None:
 
     try:
         client = _client(user_id=other_user_id, firm_id=firm_b_id)
-        resp = client.get(f"/approval/{item_id}")
+        resp = client.get(f"/api/v1/approvals/{item_id}")
         assert resp.status_code == 404
         # Approve also 404.
-        resp2 = client.post(f"/approval/{item_id}/approve")
+        resp2 = client.post(f"/api/v1/approvals/{item_id}/approve")
         assert resp2.status_code == 404
     finally:
         asyncio.run(_cleanup_firm(sm, firm_b_id))
@@ -303,9 +303,9 @@ def test_limit_validation(routes_env) -> None:
     user_id = routes_env["user_id"]
     firm_id = routes_env["firm_id"]
     client = _client(user_id=user_id, firm_id=firm_id)
-    resp = client.get("/approval/pending?limit=0")
+    resp = client.get("/api/v1/approvals/pending?limit=0")
     assert resp.status_code == 400
-    resp = client.get("/approval/pending?limit=10000")
+    resp = client.get("/api/v1/approvals/pending?limit=10000")
     assert resp.status_code == 400
 
 
@@ -318,7 +318,7 @@ def test_notes_too_long_rejected(routes_env) -> None:
 
     client = _client(user_id=user_id, firm_id=firm_id)
     resp = client.post(
-        f"/approval/{item_id}/approve",
+        f"/api/v1/approvals/{item_id}/approve",
         json={"notes": "x" * 2001},
     )
     assert resp.status_code == 422
@@ -345,7 +345,7 @@ def test_edit_payload_route_updates_pending(routes_env) -> None:
         "body_html": "<p>Better wording.</p>",
     }
     resp = client.put(
-        f"/approval/{item_id}/payload",
+        f"/api/v1/approvals/{item_id}/payload",
         json={"payload": new_payload},
     )
     assert resp.status_code == 200
@@ -364,11 +364,11 @@ def test_edit_payload_after_approve_returns_409(routes_env) -> None:
     item_id = asyncio.run(_seed_item(sm, firm_id))
 
     client = _client(user_id=user_id, firm_id=firm_id)
-    approved = client.post(f"/approval/{item_id}/approve")
+    approved = client.post(f"/api/v1/approvals/{item_id}/approve")
     assert approved.status_code == 200
 
     resp = client.put(
-        f"/approval/{item_id}/payload",
+        f"/api/v1/approvals/{item_id}/payload",
         json={"payload": {"different": "shape"}},
     )
     assert resp.status_code == 409
@@ -379,7 +379,7 @@ def test_edit_payload_missing_returns_404(routes_env) -> None:
     firm_id = routes_env["firm_id"]
     client = _client(user_id=user_id, firm_id=firm_id)
     resp = client.put(
-        f"/approval/{uuid.uuid4()}/payload",
+        f"/api/v1/approvals/{uuid.uuid4()}/payload",
         json={"payload": {}},
     )
     assert resp.status_code == 404

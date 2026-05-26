@@ -82,7 +82,7 @@ async def sweep_subscriptions(
             then one per firm for the per-user work.
         public_webhook_base_url: e.g.
             ``https://coworker.mcands.com.au``. The sweep appends
-            ``/webhooks/graph/{firm_slug}``. Must be HTTPS in
+            ``/api/v1/webhooks/graph/{firm_slug}``. Must be HTTPS in
             production — Microsoft rejects non-HTTPS notification
             URLs.
         now: injectable clock; defaults to UTC now.
@@ -192,7 +192,7 @@ async def _sweep_firm(
 
         notification_url = (
             f"{public_webhook_base_url.rstrip('/')}"
-            f"/webhooks/graph/{firm.slug}"
+            f"/api/v1/webhooks/graph/{firm.slug}"
         )
 
         for user in users:

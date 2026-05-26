@@ -32,7 +32,7 @@ from coworker.graph.subscriptions import AppGraphContext
 from coworker.security.encryption import decrypt_str, encrypt_str
 
 _SUBS_URL = "https://graph.microsoft.com/v1.0/subscriptions"
-_NOTIFICATION_URL = "https://example.com/webhooks/graph/test"
+_NOTIFICATION_URL = "https://example.com/api/v1/webhooks/graph/test"
 
 
 @pytest_asyncio.fixture

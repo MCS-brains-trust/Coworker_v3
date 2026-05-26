@@ -18,11 +18,6 @@ coworker.mcands.com.au {
         reverse_proxy localhost:8001
     }
 
-    # Webhook routes (separate process)
-    handle /webhooks/* {
-        reverse_proxy localhost:8002
-    }
-
     # Frontend SPA
     handle {
         root * /opt/coworker/shared/frontend

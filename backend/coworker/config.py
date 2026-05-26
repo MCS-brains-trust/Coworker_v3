@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     #   python3 -c "import secrets,base64; print(base64.b64encode(secrets.token_bytes(32)).decode())"
     SESSION_JWT_SECRET: SecretStr
 
-    # Where /auth/microsoft/callback redirects on success.
+    # Where /api/v1/auth/microsoft/callback redirects on success.
     OAUTH_POST_LOGIN_REDIRECT: str = "/"
 
     # Audit
@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     GRAPH_WEBHOOK_CLIENT_STATE: SecretStr = SecretStr("")  # HMAC key for Graph notifications
 
     # Public origin Microsoft Graph posts change notifications to.
-    # The subscription scheduler appends ``/webhooks/graph/{firm_slug}``
+    # The subscription scheduler appends ``/api/v1/webhooks/graph/{firm_slug}``
     # to this when creating subscriptions. Empty in dev/test until
     # the deploy is reachable from the public internet.
     PUBLIC_WEBHOOK_BASE_URL: str = ""

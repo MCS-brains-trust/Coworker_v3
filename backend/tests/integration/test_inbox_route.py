@@ -1,4 +1,4 @@
-"""Integration tests for `GET /api/inbox`.
+"""Integration tests for `GET /api/v1/inbox`.
 
 End-to-end through TestClient: real DB, real session JWT,
 Microsoft Graph mocked via respx. Pattern mirrors
@@ -192,7 +192,7 @@ def test_inbox_returns_25_messages_for_signed_in_user(
             )
         )
         response = client.get(
-            "/api/inbox",
+            "/api/v1/inbox",
             cookies={
                 "coworker_session": _issue_jwt(
                     user_id=user_id, firm_id=firm_id
@@ -228,7 +228,7 @@ def test_inbox_top_parameter_is_forwarded(inbox_route_environment) -> None:
             )
         )
         response = client.get(
-            "/api/inbox?top=5",
+            "/api/v1/inbox?top=5",
             cookies={
                 "coworker_session": _issue_jwt(
                     user_id=user_id, firm_id=firm_id
@@ -262,9 +262,9 @@ def test_inbox_rejects_invalid_top_with_422(inbox_route_environment) -> None:
         "coworker_session": _issue_jwt(user_id=user_id, firm_id=firm_id)
     }
 
-    response = client.get("/api/inbox?top=0", cookies=cookies)
+    response = client.get("/api/v1/inbox?top=0", cookies=cookies)
     assert response.status_code == 422
-    response = client.get("/api/inbox?top=1001", cookies=cookies)
+    response = client.get("/api/v1/inbox?top=1001", cookies=cookies)
     assert response.status_code == 422
 
 
@@ -279,6 +279,6 @@ def test_inbox_without_cookie_returns_401_generic(
     Exhaustive auth-failure cases are covered in test_current_user.py.
     """
     client = inbox_route_environment["client"]
-    response = client.get("/api/inbox")
+    response = client.get("/api/v1/inbox")
     assert response.status_code == 401
     assert response.json() == {"detail": "authentication required"}

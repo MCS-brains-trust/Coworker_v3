@@ -54,10 +54,10 @@ from coworker.graph.subscription_bootstrap import RESOURCE_TRIGGER_MAP
 from coworker.security.encryption import decrypt_str
 from coworker.workers.plugin_queue import PluginEventQueue
 
-router = APIRouter()
+router = APIRouter(prefix="/api/v1/webhooks", tags=["webhooks"])
 
 
-@router.post("/webhooks/graph/{firm_slug}")
+@router.post("/graph/{firm_slug}")
 async def graph_webhook(
     firm_slug: str,
     request: Request,

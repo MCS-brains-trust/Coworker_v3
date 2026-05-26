@@ -1,10 +1,11 @@
 """PKCE state storage for the Microsoft OAuth flow.
 
-The /auth/microsoft/start route generates a random state token and a
-PKCE code_verifier per request and stashes them in Redis keyed by the
-state token. The /auth/microsoft/callback route then consumes the
-state — atomically, so a replayed callback fails — to recover the
-firm_id and code_verifier needed to complete the token exchange.
+The /api/v1/auth/microsoft/start route generates a random state token
+and a PKCE code_verifier per request and stashes them in Redis keyed
+by the state token. The /api/v1/auth/microsoft/callback route then
+consumes the state (atomically, so a replayed callback fails) to
+recover the firm_id and code_verifier needed to complete the token
+exchange.
 
 Atomicity is provided by Redis GETDEL: a single round-trip that
 returns the value AND deletes the key, so two concurrent callbacks

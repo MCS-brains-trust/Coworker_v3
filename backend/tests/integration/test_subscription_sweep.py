@@ -150,7 +150,7 @@ def _subscription_response(
         "id": sub_id,
         "resource": resource,
         "changeType": "created,updated",
-        "notificationUrl": f"{_BASE}/webhooks/graph/test",
+        "notificationUrl": f"{_BASE}/api/v1/webhooks/graph/test",
         "expirationDateTime": expiration.strftime("%Y-%m-%dT%H:%M:%S.0000000Z"),
         "clientState": "echo",
         "applicationId": "app-id",
@@ -396,7 +396,7 @@ async def _seed_subscription_row(
                 user_id=user_id,
                 subscription_id=subscription_id,
                 resource="users/x/mailFolders('Inbox')/messages",
-                notification_url=f"{_BASE}/webhooks/graph/test",
+                notification_url=f"{_BASE}/api/v1/webhooks/graph/test",
                 change_type="created,updated",
                 client_state_ciphertext=encrypt_str(
                     "s", firm_id=str(firm_id),

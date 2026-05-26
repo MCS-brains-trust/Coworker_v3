@@ -1,4 +1,4 @@
-"""Integration tests for ``GET /auth/me``.
+"""Integration tests for ``GET /api/v1/auth/me``.
 
 The Phase 10-2 frontend hits this on mount to distinguish
 "signed in" from "401, redirect to login." Same generic 401
@@ -120,7 +120,7 @@ def test_me_returns_user_when_authenticated(me_env) -> None:
         "coworker_session",
         _issue_jwt(user_id=user_id, firm_id=firm_id),
     )
-    resp = client.get("/auth/me")
+    resp = client.get("/api/v1/auth/me")
     assert resp.status_code == 200
     body = resp.json()
     assert body["user_id"] == str(user_id)
@@ -133,7 +133,7 @@ def test_me_returns_user_when_authenticated(me_env) -> None:
 
 def test_me_without_cookie_returns_401(me_env) -> None:
     client = TestClient(app)
-    resp = client.get("/auth/me")
+    resp = client.get("/api/v1/auth/me")
     assert resp.status_code == 401
     # Generic body — same as every other 401 the deps issue.
     assert resp.json() == {"detail": "authentication required"}
@@ -153,5 +153,5 @@ def test_me_with_bad_signature_returns_401(me_env) -> None:
     )
     client = TestClient(app)
     client.cookies.set("coworker_session", bad)
-    resp = client.get("/auth/me")
+    resp = client.get("/api/v1/auth/me")
     assert resp.status_code == 401

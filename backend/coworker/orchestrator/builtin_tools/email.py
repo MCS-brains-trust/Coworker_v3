@@ -215,7 +215,7 @@ class EmailProposeDraftInput(BaseModel):
     body_html: str = Field(
         description=(
             "Proposed HTML body. The principal can edit before "
-            "approving via PUT /approval/{id}/payload."
+            "approving via PUT /api/v1/approvals/{id}/payload."
         ),
     )
     summary: str = Field(

@@ -1,4 +1,4 @@
-"""Session JWT — issue and decode the cookie minted at /auth/microsoft/callback.
+"""Session JWT: issue and decode the cookie minted at /api/v1/auth/microsoft/callback.
 
 HS256 signed via SESSION_JWT_SECRET (a settings field, separate from
 MASTER_ENCRYPTION_KEY because the threat model and rotation cadence

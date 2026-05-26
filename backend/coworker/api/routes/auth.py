@@ -1,14 +1,18 @@
 """Microsoft OAuth 2.0 authorization-code flow with PKCE.
 
-Three routes:
+Four routes (all under /api/v1/auth):
 
-  GET /auth/microsoft/start/{firm_slug}
+  GET /api/v1/auth/me
+    Return the authenticated principal's identity (uses the session
+    cookie). The frontend's CurrentUserProvider hits this on mount.
+
+  GET /api/v1/auth/microsoft/start/{firm_slug}
     Begin a sign-in attempt. Looks up the firm by slug, generates a
     PKCE state token + code_verifier in Redis (10-min TTL), and
     redirects the browser to login.microsoftonline.com using the
     firm's tenant_id and client_id.
 
-  GET /auth/microsoft/callback?code=...&state=...
+  GET /api/v1/auth/microsoft/callback?code=...&state=...
     Microsoft redirects here with an auth code. We atomically pop the
     state (replay-protected via GETDEL), look up the firm, decrypt
     the firm's Azure client secret, exchange the code for tokens,
@@ -17,9 +21,9 @@ Three routes:
     under the firm's AAD, append an audit-log entry, mint a session
     JWT, set the cookie, and redirect to OAUTH_POST_LOGIN_REDIRECT.
 
-  POST /auth/logout
+  POST /api/v1/auth/logout
     Clear the session cookie. Microsoft refresh-token revocation is
-    intentionally not implemented here — that requires a Graph API
+    intentionally not implemented here: that requires a Graph API
     call and belongs with the Phase 3 Graph client wrapper.
 
 Audit / loguru split
@@ -69,7 +73,7 @@ from coworker.security.session import (
     issue_session_jwt,
 )
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 _SESSION_COOKIE_NAME = "coworker_session"
 _GENERIC_AUTH_FAILURE_DETAIL = "authentication failed"
@@ -85,12 +89,13 @@ def _client_log_fields(request: Request) -> dict[str, object]:
 
 
 class CurrentUserResponse(BaseModel):
-    """Outbound /auth/me shape.
+    """Outbound /api/v1/auth/me shape.
 
-    Mirrors the User row but omits the per-firm Microsoft tokens —
+    Mirrors the User row but omits the per-firm Microsoft tokens:
     the principal's browser doesn't need them. Firm slug is
-    denormalised so the frontend can build "/auth/microsoft/start/{slug}"
-    re-auth links without a follow-up call.
+    denormalised so the frontend can build
+    "/api/v1/auth/microsoft/start/{slug}" re-auth links without a
+    follow-up call.
     """
 
     user_id: str
@@ -111,7 +116,7 @@ async def me(
     The frontend's CurrentUserProvider hits this on mount to
     distinguish "signed in" from "401, redirect to login." Same
     generic 401 shape as every other auth-required endpoint when
-    the cookie is missing / forged / expired.
+    the cookie is missing, forged, or expired.
     """
     async with firm_context(user.firm_id):
         firm = (
@@ -349,7 +354,7 @@ async def auth_logout() -> Response:
     """Clear the session cookie locally.
 
     Microsoft refresh-token revocation against Graph is NOT implemented
-    here — it requires an authenticated Graph call and belongs with the
+    here: it requires an authenticated Graph call and belongs with the
     Phase 3 Microsoft Graph client wrapper. For now, logout invalidates
     the local session only; the Microsoft-side refresh token remains
     valid until its natural expiry or a tenant-side revocation.

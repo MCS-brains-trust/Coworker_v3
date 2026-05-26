@@ -5,11 +5,12 @@ The Phase 10 web frontend calls these routes. Every route requires
 ``firm_context(user.firm_id)`` so RLS scopes the queries to one
 firm.
 
-Routes:
-    GET  /approval/pending           — list the firm's pending items
-    GET  /approval/{item_id}         — fetch one item
-    POST /approval/{item_id}/approve — pending -> approved
-    POST /approval/{item_id}/reject  — pending -> rejected
+Routes (all under /api/v1/approvals):
+    GET  /api/v1/approvals/pending           list the firm's pending items
+    GET  /api/v1/approvals/{item_id}         fetch one item
+    POST /api/v1/approvals/{item_id}/approve pending -> approved
+    POST /api/v1/approvals/{item_id}/reject  pending -> rejected
+    PUT  /api/v1/approvals/{item_id}/payload edit pending item payload
 
 Approve / reject return the post-transition row so the client
 doesn't need a follow-up GET. ``409 Conflict`` covers
@@ -36,7 +37,7 @@ from coworker.approval.items import (
 from coworker.db.models import ApprovalItem, User
 from coworker.db.session import firm_context, get_session
 
-router = APIRouter(prefix="/approval", tags=["approval"])
+router = APIRouter(prefix="/api/v1/approvals", tags=["approval"])
 
 # How many pending items the list endpoint returns per call. The
 # table's partial index orders by (firm_id, created_at DESC) so

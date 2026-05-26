@@ -107,7 +107,7 @@ def _sub(
         user_id=user_id,
         subscription_id=subscription_id,
         resource=resource,
-        notification_url="https://example.com/webhooks/graph/test-firm",
+        notification_url="https://example.com/api/v1/webhooks/graph/test-firm",
         change_type="created,updated",
         client_state_ciphertext=b"\x00\x01\x02",
         expiration_date_time=_dt.datetime.now(_dt.UTC)

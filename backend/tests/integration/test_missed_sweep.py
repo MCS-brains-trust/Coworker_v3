@@ -147,7 +147,7 @@ async def _seed_firm_user_sub(
                 resource=(
                     f"users/{azure_oid}/mailFolders('Inbox')/messages"
                 ),
-                notification_url="https://example.com/webhooks/graph/test",
+                notification_url="https://example.com/api/v1/webhooks/graph/test",
                 change_type="created,updated",
                 client_state_ciphertext=encrypt_str(
                     "secret", firm_id=firm_id_str,

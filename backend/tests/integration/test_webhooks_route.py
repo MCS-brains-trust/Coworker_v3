@@ -152,7 +152,7 @@ async def _seed_subscription(
                 user_id=user.id,
                 subscription_id=subscription_id,
                 resource=resource,
-                notification_url="https://example.com/webhooks/graph/test",
+                notification_url="https://example.com/api/v1/webhooks/graph/test",
                 change_type="created,updated",
                 client_state_ciphertext=encrypt_str(
                     client_state, firm_id=str(firm_id),
@@ -201,7 +201,7 @@ def test_validation_token_handshake_returns_plain_text(webhook_env) -> None:
     slug = webhook_env["slug"]
     client = TestClient(app)
     resp = client.post(
-        f"/webhooks/graph/{slug}",
+        f"/api/v1/webhooks/graph/{slug}",
         params={"validationToken": "abc-token-xyz"},
     )
     assert resp.status_code == 200
@@ -218,7 +218,7 @@ def test_notification_enqueues_plugin_event(webhook_env) -> None:
     body = {"value": [_notification(message_id="msg-real-1")]}
 
     client = TestClient(app)
-    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    resp = client.post(f"/api/v1/webhooks/graph/{slug}", json=body)
     assert resp.status_code == 202
 
     events = _queue_contents()
@@ -242,7 +242,7 @@ def test_multiple_notifications_in_one_post_all_enqueue(webhook_env) -> None:
     }
 
     client = TestClient(app)
-    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    resp = client.post(f"/api/v1/webhooks/graph/{slug}", json=body)
     assert resp.status_code == 202
 
     events = _queue_contents()
@@ -255,7 +255,7 @@ def test_multiple_notifications_in_one_post_all_enqueue(webhook_env) -> None:
 def test_unknown_slug_returns_202_without_enqueuing(webhook_env) -> None:
     client = TestClient(app)
     resp = client.post(
-        f"/webhooks/graph/does-not-exist-{uuid.uuid4().hex[:6]}",
+        f"/api/v1/webhooks/graph/does-not-exist-{uuid.uuid4().hex[:6]}",
         json={"value": [_notification()]},
     )
     # 202 (no leak of slug existence), but nothing enqueued.
@@ -267,7 +267,7 @@ def test_malformed_json_returns_202(webhook_env) -> None:
     slug = webhook_env["slug"]
     client = TestClient(app)
     resp = client.post(
-        f"/webhooks/graph/{slug}",
+        f"/api/v1/webhooks/graph/{slug}",
         content=b"not json",
         headers={"Content-Type": "application/json"},
     )
@@ -278,7 +278,7 @@ def test_malformed_json_returns_202(webhook_env) -> None:
 def test_non_object_body_returns_202(webhook_env) -> None:
     slug = webhook_env["slug"]
     client = TestClient(app)
-    resp = client.post(f"/webhooks/graph/{slug}", json=["just", "an", "array"])
+    resp = client.post(f"/api/v1/webhooks/graph/{slug}", json=["just", "an", "array"])
     assert resp.status_code == 202
     assert _queue_contents() == []
 
@@ -296,7 +296,7 @@ def test_notification_missing_message_id_is_skipped(webhook_env) -> None:
         ]
     }
     client = TestClient(app)
-    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    resp = client.post(f"/api/v1/webhooks/graph/{slug}", json=body)
     assert resp.status_code == 202
 
     events = _queue_contents()
@@ -309,7 +309,7 @@ def test_empty_notifications_array_returns_202_without_enqueueing(
 ) -> None:
     slug = webhook_env["slug"]
     client = TestClient(app)
-    resp = client.post(f"/webhooks/graph/{slug}", json={"value": []})
+    resp = client.post(f"/api/v1/webhooks/graph/{slug}", json={"value": []})
     assert resp.status_code == 202
     assert _queue_contents() == []
 
@@ -341,7 +341,7 @@ def test_unknown_subscription_id_is_rejected(webhook_env) -> None:
         ]
     }
     client = TestClient(app)
-    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    resp = client.post(f"/api/v1/webhooks/graph/{slug}", json=body)
     assert resp.status_code == 202
     assert _queue_contents() == []
 
@@ -364,7 +364,7 @@ def test_wrong_clientstate_is_rejected(webhook_env) -> None:
         ]
     }
     client = TestClient(app)
-    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    resp = client.post(f"/api/v1/webhooks/graph/{slug}", json=body)
     assert resp.status_code == 202
     assert _queue_contents() == []
 
@@ -406,7 +406,7 @@ def test_cross_firm_subscription_id_is_rejected(webhook_env) -> None:
             ]
         }
         client = TestClient(app)
-        resp = client.post(f"/webhooks/graph/{firm_b_slug}", json=body)
+        resp = client.post(f"/api/v1/webhooks/graph/{firm_b_slug}", json=body)
         assert resp.status_code == 202
         # Validation rejects the cross-firm replay — nothing enqueued.
         assert _queue_contents() == []
@@ -436,7 +436,7 @@ def test_valid_subscription_with_correct_clientstate_is_enqueued(
         ]
     }
     client = TestClient(app)
-    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    resp = client.post(f"/api/v1/webhooks/graph/{slug}", json=body)
     assert resp.status_code == 202
 
     events = _queue_contents()
@@ -480,7 +480,7 @@ def test_subscription_removed_deletes_row(webhook_env) -> None:
         event="subscriptionRemoved",
     )]}
     client = TestClient(app)
-    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    resp = client.post(f"/api/v1/webhooks/graph/{slug}", json=body)
     assert resp.status_code == 202
     assert _queue_contents() == []
 
@@ -510,7 +510,7 @@ def test_reauthorization_required_marks_row_for_renewal(webhook_env) -> None:
         event="reauthorizationRequired",
     )]}
     client = TestClient(app)
-    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    resp = client.post(f"/api/v1/webhooks/graph/{slug}", json=body)
     assert resp.status_code == 202
     assert _queue_contents() == []
 
@@ -547,7 +547,7 @@ def test_missed_lifecycle_marks_row_for_backfill(webhook_env) -> None:
         sub_id="sub-missed", client_state="s", event="missed",
     )]}
     client = TestClient(app)
-    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    resp = client.post(f"/api/v1/webhooks/graph/{slug}", json=body)
     assert resp.status_code == 202
     assert _queue_contents() == []
 
@@ -583,7 +583,7 @@ def test_lifecycle_with_wrong_clientstate_is_rejected(webhook_env) -> None:
         event="subscriptionRemoved",
     )]}
     client = TestClient(app)
-    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    resp = client.post(f"/api/v1/webhooks/graph/{slug}", json=body)
     assert resp.status_code == 202
 
     async def _row_survives() -> bool:
@@ -630,7 +630,7 @@ def test_calendar_resource_notification_fires_calendar_event(
         }],
     }
     client = TestClient(app)
-    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    resp = client.post(f"/api/v1/webhooks/graph/{slug}", json=body)
     assert resp.status_code == 202
 
     events = _queue_contents()
@@ -666,6 +666,6 @@ def test_unknown_resource_type_is_rejected(webhook_env) -> None:
         }],
     }
     client = TestClient(app)
-    resp = client.post(f"/webhooks/graph/{slug}", json=body)
+    resp = client.post(f"/api/v1/webhooks/graph/{slug}", json=body)
     assert resp.status_code == 202
     assert _queue_contents() == []

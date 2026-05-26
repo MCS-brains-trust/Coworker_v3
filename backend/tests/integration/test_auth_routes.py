@@ -200,7 +200,7 @@ def _delete_test_firm(sessionmaker, firm_id: uuid.UUID) -> None:
 def test_start_unknown_slug_returns_404(auth_test_environment) -> None:
     client = auth_test_environment["client"]
     slug = f"nonexistent-{uuid.uuid4().hex[:8]}"
-    response = client.get(f"/auth/microsoft/start/{slug}")
+    response = client.get(f"/api/v1/auth/microsoft/start/{slug}")
     assert response.status_code == 404
 
 
@@ -219,7 +219,7 @@ def test_start_known_slug_redirects_to_microsoft(auth_test_environment) -> None:
         secret="initial-secret",
     )
     try:
-        response = client.get(f"/auth/microsoft/start/{slug}")
+        response = client.get(f"/api/v1/auth/microsoft/start/{slug}")
         assert response.status_code == 302
         location = response.headers["location"]
         parsed = urlparse(location)
@@ -241,7 +241,7 @@ def test_start_known_slug_redirects_to_microsoft(auth_test_environment) -> None:
 def test_callback_invalid_state_returns_generic_400(auth_test_environment) -> None:
     client = auth_test_environment["client"]
     response = client.get(
-        "/auth/microsoft/callback",
+        "/api/v1/auth/microsoft/callback",
         params={"code": "anything", "state": "never-issued"},
     )
     assert response.status_code == 400
@@ -293,7 +293,7 @@ def test_callback_success_creates_user_with_encrypted_tokens(
             )
 
             response = client.get(
-                "/auth/microsoft/callback",
+                "/api/v1/auth/microsoft/callback",
                 params={"code": "fake-auth-code", "state": state_token},
             )
 
@@ -389,7 +389,7 @@ def test_callback_session_cookie_attributes_in_dev(auth_test_environment) -> Non
             )
 
             response = client.get(
-                "/auth/microsoft/callback",
+                "/api/v1/auth/microsoft/callback",
                 params={"code": "c", "state": state_token},
             )
 
