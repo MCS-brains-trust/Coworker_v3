@@ -6,6 +6,7 @@ from coworker.db.models.knowledge_graph import Entity, EntityRelationship
 from coworker.db.models.memory import ClientInteraction, Document, Lesson
 from coworker.db.models.orchestrator import AgentTrace, AgentTraceStep
 from coworker.db.models.plugins import PluginInstallation
+from coworker.db.models.specialist import Specialist, SpecialistPromptVersion
 from coworker.db.models.tenancy import Firm, User
 from coworker.db.models.token_usage import TokenUsageRow
 from coworker.db.models.work import Deadline, Job
@@ -26,6 +27,8 @@ __all__ = [
     "Job",
     "Lesson",
     "PluginInstallation",
+    "Specialist",
+    "SpecialistPromptVersion",
     "TokenUsageRow",
     "User",
 ]

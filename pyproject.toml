@@ -30,6 +30,7 @@ dependencies = [
   "python-slugify>=8",
   "pyjwt[crypto]>=2.10",
   "python-docx>=1.2.0",
+  "python-frontmatter>=1.1",
 ]
 
 [project.optional-dependencies]

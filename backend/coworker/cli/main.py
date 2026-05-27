@@ -5,11 +5,16 @@ import click
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from coworker.cli.specialist import specialist as specialist_group
+
 
 @click.group()
 def cli() -> None:
     """MC & S CoWorker v3 CLI."""
     pass
+
+
+cli.add_command(specialist_group)
 
 
 @cli.command()

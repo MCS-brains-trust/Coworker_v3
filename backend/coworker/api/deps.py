@@ -25,6 +25,7 @@ Holding it across the whole request would over-scope it to code paths
 that legitimately don't need it.
 """
 import uuid
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 import jwt
@@ -35,7 +36,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from coworker.db.models.tenancy import User
 from coworker.db.session import firm_context, get_session
 from coworker.security.session import decode_session_jwt
-
 
 _SESSION_COOKIE_NAME = "coworker_session"
 _GENERIC_AUTH_REQUIRED_DETAIL = "authentication required"
@@ -87,3 +87,34 @@ async def current_user(
     if user is None:
         raise _unauthenticated()
     return user
+
+
+def require_role(
+    *allowed_roles: str,
+) -> Callable[[User], Coroutine[Any, Any, User]]:
+    """Dependency factory: 403s if the authenticated user's role is not
+    in ``allowed_roles``. The user is resolved via the standard
+    ``current_user`` dependency, so all the 401 paths there still apply
+    before the role check ever runs.
+
+    Usage:
+        @router.put(
+            "/...",
+            dependencies=[Depends(require_role("owner", "principal"))],
+        )
+
+    The role mismatch detail lists allowed roles. That's helpful in
+    dev and not sensitive in prod (the role enum is part of the
+    public OpenAPI surface anyway).
+    """
+    allowed = frozenset(allowed_roles)
+
+    async def _check(user: User = Depends(current_user)) -> User:
+        if user.role not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires one of: {', '.join(sorted(allowed))}",
+            )
+        return user
+
+    return _check
