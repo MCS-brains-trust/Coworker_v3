@@ -135,6 +135,52 @@ export const approvals = {
   },
 };
 
+// ─── Specialists ─────────────────────────────────────────────────────────────
+
+export interface SpecialistSummary {
+  id: string;
+  name: string;
+  display_name: string;
+  description: string;
+  is_enabled: boolean;
+  model: string;
+  extended_thinking: boolean;
+  active_version_id: string | null;
+  updated_at: string;
+}
+
+export interface SpecialistListResponse {
+  specialists: SpecialistSummary[];
+}
+
+export interface SpecialistPromptResponse {
+  id: string;
+  name: string;
+  display_name: string;
+  prompt_text: string;
+  version_number: number;
+  updated_at: string;
+}
+
+export interface SpecialistPromptUpdate {
+  prompt_text: string;
+  change_summary: string;
+}
+
+export const specialists = {
+  list(): Promise<SpecialistListResponse> {
+    return request<SpecialistListResponse>('GET', `${BASE}/specialists`);
+  },
+
+  getPrompt(id: string): Promise<SpecialistPromptResponse> {
+    return request<SpecialistPromptResponse>('GET', `${BASE}/specialists/${id}/prompt`);
+  },
+
+  updatePrompt(id: string, body: SpecialistPromptUpdate): Promise<SpecialistPromptResponse> {
+    return request<SpecialistPromptResponse>('PUT', `${BASE}/specialists/${id}/prompt`, body);
+  },
+};
+
 // ─── Inbox ───────────────────────────────────────────────────────────────────
 
 export interface InboxItem {

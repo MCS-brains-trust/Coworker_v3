@@ -17,7 +17,7 @@ const NAV = [
   { label: 'Activity',        path: '/activity',        icon: Activity,        status: 'soon' as const },
   { label: 'Findings',        path: '/findings',        icon: Lightbulb,       status: 'soon' as const },
   { label: 'Chat',            path: '/chat',            icon: MessageSquare,   status: 'soon' as const },
-  { label: 'Specialists',     path: '/specialists',     icon: Users,           status: 'soon' as const },
+  { label: 'Specialists',     path: '/specialists',     icon: Users,           status: 'live' as const },
   { label: 'Settings',        path: '/settings',        icon: Settings,        status: 'soon' as const },
 ]
 
