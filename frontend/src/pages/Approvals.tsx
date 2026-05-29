@@ -295,7 +295,7 @@ export default function ApprovalsPage() {
   }
 
   return (
-    <div className="flex h-full -m-6 overflow-hidden">
+    <div className="flex h-full overflow-hidden">
       {/* Left pane */}
       <div
         className="w-80 flex-shrink-0 flex flex-col border-r overflow-hidden"
