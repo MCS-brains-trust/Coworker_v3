@@ -71,6 +71,17 @@ class AgentTraceWriter:
             )
         return self._trace_id
 
+    @property
+    def next_step_index(self) -> int:
+        """The ``step_index`` that the next recorded step will receive.
+
+        Exposed so callers that want to surface step positions to a
+        client (e.g. the chat orchestrator's SSE events referencing
+        an in-flight consultation step) can read it without poking
+        at the underlying counter.
+        """
+        return self._step_index
+
     async def start_trace(
         self,
         *,
@@ -162,6 +173,10 @@ class AgentTraceWriter:
         duration_ms: int,
         cost_cents: int = 0,
         error_class: str | None = None,
+        model: str | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        extra_content: dict[str, Any] | None = None,
     ) -> uuid.UUID:
         """Append a tool_result step.
 
@@ -176,21 +191,37 @@ class AgentTraceWriter:
         ``cost_cents`` is for tools that themselves cost money —
         a Voyage embedding tool, a Sonnet rerank, a vision pipeline
         call. The engine accumulates them into the trace total.
+
+        ``model`` / ``input_tokens`` / ``output_tokens`` are for tools
+        whose execution itself makes a model call: notably the chat
+        orchestrator's ``consult_specialist`` tool, whose handler
+        opens an Opus stream against the specialist's prompt. The
+        engine's local-execution tools leave them as None and the
+        token totals roll up only the model_call rows.
+
+        ``extra_content`` is merged into the step's content jsonb
+        alongside ``tool_use_id`` / ``result`` / ``error_class`` —
+        used by callers that need to record per-tool audit detail
+        (e.g. ``specialist_prompt_version_id`` for the chat
+        orchestrator) without forcing a new writer method per tool.
         """
+        content: dict[str, Any] = {
+            "tool_use_id": tool_use_id,
+            "result": result,
+            "error_class": error_class,
+        }
+        if extra_content:
+            content.update(extra_content)
         return await self._insert_step(
             step_type="tool_result",
-            model=None,
+            model=model,
             tool_name=tool_name,
-            input_tokens=None,
-            output_tokens=None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             cost_cents=cost_cents,
             duration_ms=duration_ms,
             is_error=is_error,
-            content={
-                "tool_use_id": tool_use_id,
-                "result": result,
-                "error_class": error_class,
-            },
+            content=content,
         )
 
     async def record_error(

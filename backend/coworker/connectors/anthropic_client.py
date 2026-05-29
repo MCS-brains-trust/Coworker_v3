@@ -129,7 +129,23 @@ class StreamCompletion:
     model: str
 
 
-StreamEvent = StreamTextDelta | StreamCompletion
+@dataclass(frozen=True)
+class StreamToolUseBlock:
+    """A complete tool_use block surfaced after the streamed text deltas.
+
+    Emitted by ``stream_message_with_tools`` once the stream's final
+    message is available. ``input`` already has PII placeholders
+    restored so the orchestrator can forward real values to the
+    tool handler (which, in turn, will scrub again at its own
+    Anthropic boundary if it makes another API call).
+    """
+
+    id: str
+    name: str
+    input: dict[str, Any]
+
+
+StreamEvent = StreamTextDelta | StreamCompletion | StreamToolUseBlock
 
 
 class AnthropicClient:
@@ -444,6 +460,125 @@ class AnthropicClient:
             raise ConnectorTransient(
                 f"network/timeout talking to Anthropic: {exc}"
             ) from exc
+
+        full_text = "".join(assembled)
+        if mapping:
+            for placeholder, original in mapping.items():
+                full_text = full_text.replace(placeholder, original)
+
+        if self._token_meter is not None:
+            await self._token_meter.record(
+                firm_id=self._firm_id,
+                model=final_message.model,
+                input_tokens=final_message.usage.input_tokens,
+                output_tokens=final_message.usage.output_tokens,
+            )
+
+        yield StreamCompletion(
+            full_text=full_text,
+            stop_reason=final_message.stop_reason or "unknown",
+            input_tokens=final_message.usage.input_tokens,
+            output_tokens=final_message.usage.output_tokens,
+            model=final_message.model,
+        )
+
+    async def stream_message_with_tools(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        system: str | None,
+        tools: list[dict[str, Any]],
+        model: str,
+        max_tokens: int,
+    ) -> AsyncIterator[StreamEvent]:
+        """Stream a tool-use-capable Claude response.
+
+        Mirrors ``complete_tool_use``'s PII contract: dict-shaped
+        messages (mixed text / tool_use / tool_result content blocks)
+        are scrubbed via ``_scrub_tool_use_messages``; the system
+        prompt is scrubbed too. Tool definitions are passed through
+        unscrubbed (today's definitions hold no PII; matches the
+        existing ``complete_tool_use`` behaviour).
+
+        Event ordering: zero or more ``StreamTextDelta`` (text in
+        placeholder space, mid-stream), zero or more
+        ``StreamToolUseBlock`` (after text stream finishes, derived
+        from the final message — inputs have placeholders restored),
+        then exactly one ``StreamCompletion`` (assembled full_text
+        with placeholders restored, plus stop_reason and usage).
+
+        Within one streamed call Claude emits text first then any
+        tool_use blocks; we surface tool_uses after the text stream
+        because the SDK only exposes them on the final message.
+        Functionally fine — by the time the text preamble ends, the
+        tool calls are ready to dispatch.
+
+        Raises the same connector taxonomy as the other methods.
+        """
+        if not messages:
+            raise ValueError("messages must contain at least one entry")
+        if max_tokens < 1:
+            raise ValueError("max_tokens must be >= 1")
+
+        scrubbed_messages, mapping = self._scrub_tool_use_messages(messages)
+        scrubbed_system, system_mapping = self._scrub_system(system)
+        if system_mapping:
+            mapping.update(system_mapping)
+
+        stream_kwargs: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": scrubbed_messages,
+            "tools": tools,
+        }
+        if scrubbed_system is not None:
+            stream_kwargs["system"] = scrubbed_system
+
+        assembled: list[str] = []
+        try:
+            async with self._client.messages.stream(**stream_kwargs) as stream:
+                async for chunk in stream.text_stream:
+                    assembled.append(chunk)
+                    yield StreamTextDelta(text=chunk)
+                final_message = await stream.get_final_message()
+        except anthropic.AuthenticationError as exc:
+            raise ConnectorAuthError(
+                f"Anthropic auth failed: {exc.message}"
+            ) from exc
+        except anthropic.PermissionDeniedError as exc:
+            raise ConnectorAuthError(
+                f"Anthropic permission denied: {exc.message}"
+            ) from exc
+        except anthropic.RateLimitError as exc:
+            retry_after = _parse_retry_after(
+                exc.response.headers.get("Retry-After")
+            )
+            raise ConnectorRateLimited(retry_after=retry_after) from exc
+        except anthropic.APIStatusError as exc:
+            if 500 <= exc.status_code < 600:
+                raise ConnectorTransient(
+                    f"Anthropic returned {exc.status_code}: {exc.message}"
+                ) from exc
+            raise ConnectorAuthError(
+                f"Anthropic returned {exc.status_code}: {exc.message}"
+            ) from exc
+        except (anthropic.APIConnectionError, anthropic.APITimeoutError) as exc:
+            raise ConnectorTransient(
+                f"network/timeout talking to Anthropic: {exc}"
+            ) from exc
+
+        for block in final_message.content:
+            if getattr(block, "type", None) == "tool_use":
+                restored_input = _restore_in_value(
+                    getattr(block, "input", {}) or {}, mapping
+                )
+                yield StreamToolUseBlock(
+                    id=getattr(block, "id", ""),
+                    name=getattr(block, "name", ""),
+                    input=restored_input
+                    if isinstance(restored_input, dict)
+                    else {},
+                )
 
         full_text = "".join(assembled)
         if mapping:
