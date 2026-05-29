@@ -26,6 +26,7 @@ Token metering and extended-thinking opt-in land in subsequent
 sub-phase commits (3B-4 and 3B-5 respectively).
 """
 import datetime as _dt
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -96,6 +97,39 @@ class CompletionResult:
             f"output_tokens={self.output_tokens}, "
             f"text=<{len(self.text)} chars redacted>)"
         )
+
+
+@dataclass(frozen=True)
+class StreamTextDelta:
+    """One incremental text fragment from a streaming response.
+
+    Text is in PII-placeholder space (i.e. whatever the model is
+    emitting verbatim). Per-chunk placeholder restoration is not
+    attempted because placeholders can straddle chunk boundaries;
+    the final restored text arrives on ``StreamCompletion.full_text``.
+    """
+
+    text: str
+
+
+@dataclass(frozen=True)
+class StreamCompletion:
+    """Terminal event emitted once the stream finishes successfully.
+
+    ``full_text`` is the assembled response with PII placeholders
+    restored — what consumers should persist as the canonical
+    assistant message body. Token counts come from the SDK's final
+    message ``usage`` payload.
+    """
+
+    full_text: str
+    stop_reason: str
+    input_tokens: int
+    output_tokens: int
+    model: str
+
+
+StreamEvent = StreamTextDelta | StreamCompletion
 
 
 class AnthropicClient:
@@ -323,6 +357,113 @@ class AnthropicClient:
             output_tokens=response.usage.output_tokens,
             model=response.model,
             completed_at=_dt.datetime.now(_dt.UTC),
+        )
+
+    async def stream_message(
+        self,
+        messages: list[CompletionMessage],
+        *,
+        model: str,
+        max_tokens: int,
+        system: str | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Stream a Claude response chunk by chunk.
+
+        Mirrors ``complete``'s contract for PII handling: messages
+        and system prompt are scrubbed on the way out; placeholders
+        are restored on the assembled full text returned in the
+        terminal ``StreamCompletion`` event. The per-chunk
+        ``StreamTextDelta`` payloads are left in placeholder space
+        because a placeholder token can straddle a chunk boundary;
+        consumers that want restored text should prefer
+        ``StreamCompletion.full_text``.
+
+        Args:
+            messages: conversation history (string content only).
+            model: model id; never hardcode at call sites.
+            max_tokens: response cap.
+            system: optional system prompt; scrubbed too.
+
+        Yields:
+            ``StreamTextDelta`` zero or more times, then exactly one
+            ``StreamCompletion`` on success.
+
+        Raises:
+            ConnectorAuthError: 401/403/other unrecoverable 4xx.
+            ConnectorRateLimited: 429, with parsed retry_after.
+            ConnectorTransient: 5xx / timeout / network error.
+            ValueError: empty messages or max_tokens < 1.
+        """
+        if not messages:
+            raise ValueError("messages must contain at least one entry")
+        if max_tokens < 1:
+            raise ValueError("max_tokens must be >= 1")
+
+        scrubbed_messages, mapping = self._scrub_messages(messages)
+        scrubbed_system, system_mapping = self._scrub_system(system)
+        if system_mapping:
+            mapping.update(system_mapping)
+
+        stream_kwargs: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": scrubbed_messages,
+        }
+        if scrubbed_system is not None:
+            stream_kwargs["system"] = scrubbed_system
+
+        assembled: list[str] = []
+        try:
+            async with self._client.messages.stream(**stream_kwargs) as stream:
+                async for chunk in stream.text_stream:
+                    assembled.append(chunk)
+                    yield StreamTextDelta(text=chunk)
+                final_message = await stream.get_final_message()
+        except anthropic.AuthenticationError as exc:
+            raise ConnectorAuthError(
+                f"Anthropic auth failed: {exc.message}"
+            ) from exc
+        except anthropic.PermissionDeniedError as exc:
+            raise ConnectorAuthError(
+                f"Anthropic permission denied: {exc.message}"
+            ) from exc
+        except anthropic.RateLimitError as exc:
+            retry_after = _parse_retry_after(
+                exc.response.headers.get("Retry-After")
+            )
+            raise ConnectorRateLimited(retry_after=retry_after) from exc
+        except anthropic.APIStatusError as exc:
+            if 500 <= exc.status_code < 600:
+                raise ConnectorTransient(
+                    f"Anthropic returned {exc.status_code}: {exc.message}"
+                ) from exc
+            raise ConnectorAuthError(
+                f"Anthropic returned {exc.status_code}: {exc.message}"
+            ) from exc
+        except (anthropic.APIConnectionError, anthropic.APITimeoutError) as exc:
+            raise ConnectorTransient(
+                f"network/timeout talking to Anthropic: {exc}"
+            ) from exc
+
+        full_text = "".join(assembled)
+        if mapping:
+            for placeholder, original in mapping.items():
+                full_text = full_text.replace(placeholder, original)
+
+        if self._token_meter is not None:
+            await self._token_meter.record(
+                firm_id=self._firm_id,
+                model=final_message.model,
+                input_tokens=final_message.usage.input_tokens,
+                output_tokens=final_message.usage.output_tokens,
+            )
+
+        yield StreamCompletion(
+            full_text=full_text,
+            stop_reason=final_message.stop_reason or "unknown",
+            input_tokens=final_message.usage.input_tokens,
+            output_tokens=final_message.usage.output_tokens,
+            model=final_message.model,
         )
 
     async def complete_tool_use(

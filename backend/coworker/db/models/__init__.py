@@ -1,6 +1,7 @@
 from coworker.db.base import Base
 from coworker.db.models.approval import ApprovalItem
 from coworker.db.models.audit import AuditLogEntry
+from coworker.db.models.chat import ChatConversation, ChatMessage
 from coworker.db.models.graph_subscriptions import GraphSubscription
 from coworker.db.models.knowledge_graph import Entity, EntityRelationship
 from coworker.db.models.memory import ClientInteraction, Document, Lesson
@@ -17,6 +18,8 @@ __all__ = [
     "ApprovalItem",
     "AuditLogEntry",
     "Base",
+    "ChatConversation",
+    "ChatMessage",
     "ClientInteraction",
     "Deadline",
     "Document",
